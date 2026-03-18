@@ -1,0 +1,24 @@
+{
+  "name": "job-mcp-server",
+  "version": "1.0.0",
+  "description": "MCP server for AI-powered job search, resume matching, and application tracking",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "worker": "node src/scheduler.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "apify-client": "^2.9.3",
+    "mongoose": "^8.3.4",
+    "pdf-parse": "^1.1.1",
+    "node-cron": "^3.0.3",
+    "axios": "^1.7.2",
+    "zod": "^3.23.8"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
