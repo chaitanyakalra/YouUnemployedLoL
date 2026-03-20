@@ -6,9 +6,19 @@ export async function connectDB() {
   if (isConnected) return;
 
   const uri = process.env.MONGODB_URI;
-  if (!uri) throw new Error("MONGODB_URI environment variable is not set");
+  if (!uri) {
+    console.error("⚠️  MONGODB_URI not set — DB features will be unavailable");
+    return;
+  }
 
-  await mongoose.connect(uri);
-  isConnected = true;
-  console.error("✅ MongoDB connected");
+  try {
+    await mongoose.connect(uri);
+    isConnected = true;
+    console.error("✅ MongoDB connected");
+  } catch (err) {
+    console.error("⚠️  MongoDB connection failed:", err.message);
+    console.error("    DB-dependent tools will return errors until connection is restored.");
+    // Retry every 30 seconds
+    setTimeout(connectDB, 30_000);
+  }
 }
