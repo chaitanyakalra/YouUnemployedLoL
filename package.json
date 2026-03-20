@@ -5,6 +5,7 @@
   "type": "module",
   "main": "src/index.js",
   "scripts": {
+    "build": "npm install",
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
     "worker": "node src/scheduler.js"
