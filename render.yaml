@@ -8,23 +8,6 @@ services:
     startCommand: node src/index.js
     envVars:
       - key: MONGODB_URI
-        sync: false   # you'll paste this in Render dashboard
-      - key: APIFY_API_KEY
-        sync: false   # you'll paste this in Render dashboard
-      - key: NODE_ENV
-        value: production
-
-  # ── Background Worker (scraper — runs every 6 hours) ─────────────────────────
-  - type: worker
-    name: job-scraper-worker
-    runtime: node
-    plan: free
-    buildCommand: npm install
-    startCommand: node src/scheduler.js
-    envVars:
-      - key: MONGODB_URI
-        sync: false
-      - key: APIFY_API_KEY
-        sync: false
+        sync: false   # paste this in Render dashboard
       - key: NODE_ENV
         value: production

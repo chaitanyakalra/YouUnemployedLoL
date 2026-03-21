@@ -10,39 +10,52 @@ import {
 
 import { connectDB } from "./db/connect.js";
 
-import { searchJobsTool,       searchJobs       } from "./tools/search_jobs.js";
-import { matchResumeTool,      matchResume      } from "./tools/match_resume.js";
+// ── Tools ─────────────────────────────────────────────────────────────────────
+import { setProfileTool,       setProfile       } from "./tools/set_profile.js";
+import { findJobsTool,         findJobs         } from "./tools/find_jobs.js";
 import { getJobDetailsTool,    getJobDetails    } from "./tools/get_job_details.js";
 import { trackApplicationTool, trackApplication } from "./tools/track_application.js";
+import { matchResumeTool,      matchResume      } from "./tools/match_resume.js";
 
-// ── Connect to MongoDB ────────────────────────────────────────────────────────
+// ── Single source of truth for registered tools ────────────────────────────────
+const TOOLS = [
+  { def: setProfileTool,       fn: setProfile       },
+  { def: findJobsTool,         fn: findJobs         },
+  { def: getJobDetailsTool,    fn: getJobDetails    },
+  { def: trackApplicationTool, fn: trackApplication },
+  { def: matchResumeTool,      fn: matchResume      },
+];
+
+const TOOL_NAMES = TOOLS.map((t) => t.def.name);
+const TOOL_DEFS  = TOOLS.map((t) => t.def);
+const TOOL_MAP   = Object.fromEntries(TOOLS.map((t) => [t.def.name, t.fn]));
+
+// ── Connect to MongoDB (needed by match_resume, get_job_details, track_application)
 await connectDB();
 
-// ── Helper: create a fresh MCP Server instance ────────────────────────────────
+// ── MCP Server factory ────────────────────────────────────────────────────────
 function createMcpServer() {
   const server = new Server(
-    { name: "job-mcp-server", version: "1.0.0" },
+    { name: "youunemployedlol", version: "2.0.0" },
     { capabilities: { tools: {} } }
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [searchJobsTool, matchResumeTool, getJobDetailsTool, trackApplicationTool],
+    tools: TOOL_DEFS,
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
     let text;
     try {
-      switch (name) {
-        case "search_jobs":       text = await searchJobs(args);       break;
-        case "match_resume":      text = await matchResume(args);      break;
-        case "get_job_details":   text = await getJobDetails(args);    break;
-        case "track_application": text = await trackApplication(args); break;
-        default:
-          text = `Unknown tool: "${name}". Available: search_jobs, match_resume, get_job_details, track_application`;
+      const fn = TOOL_MAP[name];
+      if (fn) {
+        text = await fn(args);
+      } else {
+        text = `Unknown tool: "${name}". Available: ${TOOL_NAMES.join(", ")}`;
       }
     } catch (err) {
-      text = `Error in tool "${name}": ${err.message}\n\nIf this is a database error, the server may still be starting up. Please try again in a moment.`;
+      text = `Error in "${name}": ${err.message}`;
     }
     return { content: [{ type: "text", text }] };
   });
@@ -50,16 +63,14 @@ function createMcpServer() {
   return server;
 }
 
-// ── Express App ───────────────────────────────────────────────────────────────
+// ── Express app ───────────────────────────────────────────────────────────────
 const app = express();
 app.use(express.json());
 
-// ── 1. Streamable HTTP Transport (modern — for mcp-remote, Claude Desktop) ────
-//       All communication happens over POST /mcp
+// Streamable HTTP (modern — mcp-remote, Claude Desktop)
 const streamableSessions = new Map();
 
 app.post("/mcp", async (req, res) => {
-  // New session: client sends initialize request
   if (isInitializeRequest(req.body)) {
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => crypto.randomUUID(),
@@ -67,48 +78,37 @@ app.post("/mcp", async (req, res) => {
         streamableSessions.set(sessionId, transport);
       },
     });
-
     transport.onclose = () => {
       if (transport.sessionId) streamableSessions.delete(transport.sessionId);
     };
-
     const server = createMcpServer();
     await server.connect(transport);
     await transport.handleRequest(req, res, req.body);
     return;
   }
-
-  // Existing session
   const sessionId = req.headers["mcp-session-id"];
   const transport = streamableSessions.get(sessionId);
   if (!transport) {
-    return res.status(400).json({ jsonrpc: "2.0", error: { code: -32000, message: "Invalid or expired session" }, id: null });
+    return res.status(400).json({ jsonrpc: "2.0", error: { code: -32000, message: "Invalid session" }, id: null });
   }
   await transport.handleRequest(req, res, req.body);
 });
 
-// GET /mcp — for SSE streaming responses in stateless mode
 app.get("/mcp", async (req, res) => {
   const sessionId = req.headers["mcp-session-id"];
   const transport = streamableSessions.get(sessionId);
-  if (!transport) {
-    return res.status(400).json({ error: "Invalid or expired session" });
-  }
+  if (!transport) return res.status(400).json({ error: "Invalid session" });
   await transport.handleRequest(req, res);
 });
 
-// DELETE /mcp — session cleanup
 app.delete("/mcp", async (req, res) => {
   const sessionId = req.headers["mcp-session-id"];
   const transport = streamableSessions.get(sessionId);
-  if (transport) {
-    await transport.close();
-    streamableSessions.delete(sessionId);
-  }
+  if (transport) { await transport.close(); streamableSessions.delete(sessionId); }
   res.status(200).json({ ok: true });
 });
 
-// ── 2. Legacy SSE Transport (for older clients) ───────────────────────────────
+// Legacy SSE
 const legacyTransports = {};
 
 app.get("/sse", async (req, res) => {
@@ -122,22 +122,26 @@ app.get("/sse", async (req, res) => {
 app.post("/messages", async (req, res) => {
   const { sessionId } = req.query;
   const transport = legacyTransports[sessionId];
-  if (!transport) {
-    return res.status(400).json({ error: "Invalid or expired sessionId" });
-  }
+  if (!transport) return res.status(400).json({ error: "Invalid sessionId" });
   await transport.handlePostMessage(req, res);
 });
 
-// ── Health check ──────────────────────────────────────────────────────────────
+// ── Health — dynamic from TOOLS array ─────────────────────────────────────────
 app.get("/health", (_req, res) => {
-  res.json({ status: "ok", tools: 4, transports: ["streamable-http (/mcp)", "sse (/sse)"] });
+  res.json({
+    status:     "ok",
+    version:    "2.0.0",
+    tools:      TOOL_NAMES,
+    transports: ["streamable-http (POST /mcp)", "sse (GET /sse)"],
+    flow:       "set_profile → find_jobs → get_job_details / track_application",
+    note:       "find_jobs uses live Apify scraping (LinkedIn + Internshala). match_resume reads MongoDB.",
+  });
 });
 
-// ── Start ─────────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
-  console.error(`🚀 Job MCP Server running on port ${PORT}`);
-  console.error(`   Streamable HTTP: POST /mcp`);
-  console.error(`   Legacy SSE:      GET  /sse`);
-  console.error(`   Health:          GET  /health`);
+  console.error(`🚀 YouUnemployedLol v2.0 on port ${PORT}`);
+  console.error(`   Tools (${TOOL_NAMES.length}): ${TOOL_NAMES.join(", ")}`);
+  console.error(`   Flow: set_profile → find_jobs → get_job_details / track_application`);
+  console.error(`   POST /mcp | GET /sse | GET /health`);
 });
