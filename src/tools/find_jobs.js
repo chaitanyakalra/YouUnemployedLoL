@@ -3,6 +3,7 @@
 // Returns STEP 4 table data: scored jobs ≥6, skip list, seniority flags.
 
 import { ApifyClient } from "apify-client";
+import { extractStr } from "../utils/extractStr.js";
 const client = new ApifyClient({ token: process.env.APIFY_API_KEY });
 
 // ─── Tool definition ──────────────────────────────────────────────────────────
@@ -161,18 +162,39 @@ async function scrapeLinkedIn({ keywords, location, job_type, posted_within, max
   try {
     const run = await client.actor("worldunboxer/rapid-linkedin-scraper").call(input, { waitSecs: 90 });
     const { items } = await client.dataset(run.defaultDatasetId).listItems();
-    return (items || []).map((i) => ({
-      title:          i.title        || i.jobTitle     || "",
-      company:        i.company      || i.companyName  || "",
-      location:       i.location     || "",
-      isRemote:       /remote/i.test(i.location || "") || /remote/i.test(i.workType || ""),
-      applyUrl:       i.jobUrl       || i.applyUrl     || i.link || "",
-      datePosted:     i.postedAt     || i.publishedAt  || null,
-      experienceLevel:i.seniorityLevel || i.experienceLevel || "",
-      employmentType: i.employmentType || "",
-      skills:         Array.isArray(i.skills) ? i.skills : [],
-      source:         "linkedin",
-    }));
+
+    // Diagnostic: log the raw keys of the first item so schema changes are visible in server logs
+    if (items?.length) {
+      console.error("[LinkedIn scrape] raw item keys:", Object.keys(items[0]));
+    }
+
+    return (items || []).map((i) => {
+      const title    = extractStr(i, "title", "jobTitle", "positionName", "name");
+      const company  = extractStr(i, "company", "companyName", "organizationName", "hiringOrganization");
+      const location = extractStr(i, "location", "jobLocation", "place", "workLocation", "formattedLocation");
+      const workType = extractStr(i, "workType", "workplaceType", "remoteType", "workplaceTypes");
+
+      // Emit a warning if critical fields are still empty after all fallbacks
+      if (!title || !company) {
+        console.error("[LinkedIn scrape] ⚠️  Empty title/company after normalization. Raw keys:", Object.keys(i));
+      }
+
+      return {
+        title,
+        company,
+        location,
+        isRemote:        /remote/i.test(location) || /remote/i.test(workType),
+        applyUrl:        extractStr(i, "jobUrl", "url", "applyUrl", "link", "externalApplyUrl"),
+        datePosted:      i.postedAt || i.publishedAt || i.datePosted || i.postedDate || i.postedTime || i.listedAt || null,
+        experienceLevel: extractStr(i, "seniorityLevel", "experienceLevel", "seniority", "seniorityLevelText"),
+        employmentType:  extractStr(i, "employmentType", "contractType", "jobType"),
+        skills:          Array.isArray(i.skills) ? i.skills
+                           : Array.isArray(i.requiredSkills) ? i.requiredSkills
+                           : Array.isArray(i.jobSkills) ? i.jobSkills
+                           : [],
+        source:          "linkedin",
+      };
+    });
   } catch (err) {
     console.error("LinkedIn scrape error:", err.message);
     return [];
