@@ -141,39 +141,36 @@ function computeFitScore({ jobTitle, jobExpLevel, jobIsRemote, jobLocation, jobS
 // ─── Apify scraper calls ──────────────────────────────────────────────────────
 
 /**
- * Map posted_within string to LinkedIn's time filter value.
- * LinkedIn actor uses: "r86400" (24h), "r604800" (week), "r2592000" (month)
+ * Map posted_within string to the date filter value used by worldunboxer/rapid-linkedin-scraper.
  */
 function postedWithinToLinkedIn(posted = "this week") {
   const p = posted.toLowerCase();
-  if (p.includes("today") || p.includes("24"))    return "r86400";
-  if (p.includes("2 day") || p.includes("two"))   return "r172800";
-  return "r604800"; // default: "this week"
+  if (p.includes("today") || p.includes("24"))    return "past-24h";
+  if (p.includes("2 day") || p.includes("two"))   return "past-week";
+  return "past-week"; // default: "this week"
 }
 
 async function scrapeLinkedIn({ keywords, location, job_type, posted_within, max }) {
-  const typeMap = { "full-time": "F", "internship": "I", "both": undefined };
   const input = {
-    keywords,
+    keywords: [keywords],   // actor expects an array of search strings
     location,
-    ...(typeMap[job_type] && { experienceLevel: typeMap[job_type] }),
-    publishedAt: postedWithinToLinkedIn(posted_within),
-    rows: max,
+    datePosted: postedWithinToLinkedIn(posted_within),
+    resultsPerPage: max,
     proxy: { useApifyProxy: true },
   };
   try {
-    const run = await client.actor("curious_coder/linkedin-jobs-scraper").call(input, { waitSecs: 90 });
+    const run = await client.actor("worldunboxer/rapid-linkedin-scraper").call(input, { waitSecs: 90 });
     const { items } = await client.dataset(run.defaultDatasetId).listItems();
     return (items || []).map((i) => ({
       title:          i.title        || i.jobTitle     || "",
       company:        i.company      || i.companyName  || "",
       location:       i.location     || "",
-      isRemote:       /remote/i.test(i.location || ""),
+      isRemote:       /remote/i.test(i.location || "") || /remote/i.test(i.workType || ""),
       applyUrl:       i.jobUrl       || i.applyUrl     || i.link || "",
-      datePosted:     i.publishedAt  || i.postedAt     || null,
-      experienceLevel:i.experienceLevel || i.seniorityLevel || "",
+      datePosted:     i.postedAt     || i.publishedAt  || null,
+      experienceLevel:i.seniorityLevel || i.experienceLevel || "",
       employmentType: i.employmentType || "",
-      skills:         [],
+      skills:         Array.isArray(i.skills) ? i.skills : [],
       source:         "linkedin",
     }));
   } catch (err) {
@@ -184,24 +181,42 @@ async function scrapeLinkedIn({ keywords, location, job_type, posted_within, max
 
 async function scrapeInternshala({ keywords, location, job_type, max }) {
   if (job_type === "full-time") return []; // Internshala is internship-focused
+  const slug = encodeURIComponent(keywords.toLowerCase().replace(/\s+/g, "-"));
+  const locSlug = encodeURIComponent(location.toLowerCase().replace(/\s+/g, "-"));
+  const isRemotePref = /remote/i.test(location);
+  const startUrl = isRemotePref
+    ? `https://internshala.com/internships/${slug}-internship/`
+    : `https://internshala.com/internships/${slug}-internship-in-${locSlug}/`;
   try {
     const run = await client.actor("apify/web-scraper").call({
-      startUrls: [{
-        url: `https://internshala.com/internships/${encodeURIComponent(keywords)}-internship-in-${encodeURIComponent(location.toLowerCase().replace(/\s+/g, "-"))}/`,
-      }],
+      startUrls: [{ url: startUrl }],
       pageFunction: `async function pageFunction(context) {
         const { $, request } = context;
         const jobs = [];
-        $(".internship_meta").each((i, el) => {
+        // Try current and legacy selectors for resilience
+        const containers = $(".individual_internship, .internship-item, [data-internship_id]");
+        containers.each((i, el) => {
           const $el = $(el);
-          jobs.push({
-            title:    $el.find(".profile").text().trim(),
-            company:  $el.find(".company_name").text().trim(),
-            location: $el.find(".location_link").text().trim() || "Remote",
-            applyUrl: "https://internshala.com" + ($el.closest(".internship-item").find("a.view_detail_button").attr("href") || ""),
-            datePosted: null,
-            isRemote:  /remote/i.test($el.find(".location_link").text()),
-          });
+          const title =
+            $el.find(".profile h3, .profile .heading_4_5, h3.heading_4_5").first().text().trim() ||
+            $el.find(".profile").first().text().trim();
+          const company =
+            $el.find(".company_name a, .company_name, .company-name a, .company-name").first().text().trim();
+          const location =
+            $el.find(".location_link, .locations span, .location span").first().text().trim() || "Remote";
+          const relPath =
+            $el.find("a.view_detail_button, a[href*='/internship/detail/']").first().attr("href") || "";
+          const applyUrl = relPath.startsWith("http") ? relPath : "https://internshala.com" + relPath;
+          if (title) {
+            jobs.push({
+              title,
+              company,
+              location,
+              applyUrl,
+              datePosted: null,
+              isRemote: /remote/i.test(location),
+            });
+          }
         });
         return jobs.slice(0, ${max});
       }`,
