@@ -4,15 +4,23 @@ import { extractStr } from "../utils/extractStr.js";
 
 const client = new ApifyClient({ token: process.env.APIFY_API_KEY });
 
+// ─── curious_coder/linkedin-jobs-scraper output shape ─────────────────────────
+// Confirmed field names from actor docs (2024-2025):
+//   id, title, company, companyUrl, location, url, postedAt,
+//   seniorityLevel, employmentType, description, skills[]
 function normalizeLinkedInJob(raw) {
-  // worldunboxer/rapid-linkedin-scraper output shape — covers current and historical field names
   const title    = extractStr(raw, "title", "jobTitle", "positionName", "name") || "Untitled";
-  const company  = extractStr(raw, "company", "companyName", "organizationName", "hiringOrganization") || "Unknown";
-  const location = extractStr(raw, "location", "jobLocation", "place", "workLocation", "formattedLocation");
-  const workType = extractStr(raw, "workType", "workplaceType", "remoteType", "workplaceTypes");
+  const company  = extractStr(raw, "company", "companyName", "companyTitle", "organizationName") || "Unknown";
+  const location = extractStr(raw, "location", "jobLocation", "formattedLocation", "place");
+  const workType = extractStr(raw, "workType", "workplaceType", "remoteAllowed");
+
+  if (title === "Untitled" || company === "Unknown") {
+    console.error("[LinkedIn Worker] ⚠️  normalization empty — raw keys:", Object.keys(raw));
+    console.error("[LinkedIn Worker] raw sample:", JSON.stringify(raw, null, 2));
+  }
 
   return {
-    externalId:      raw.id || raw.jobUrl || raw.url || String(Math.random()),
+    externalId:      raw.id || raw.url || raw.jobUrl || String(Math.random()),
     source:          "linkedin",
     title,
     company,
@@ -27,43 +35,40 @@ function normalizeLinkedInJob(raw) {
     salaryCurrency:  "USD",
     salaryPeriod:    "yearly",
     employmentType:  extractStr(raw, "employmentType", "contractType", "jobType") || null,
-    experienceLevel: (extractStr(raw, "seniorityLevel", "experienceLevel", "seniority", "seniorityLevelText") || null)?.toLowerCase() || null,
+    experienceLevel: (extractStr(raw, "seniorityLevel", "experienceLevel", "seniority") || null)?.toLowerCase() || null,
     department:      null,
-    description:     extractStr(raw, "description", "jobDescription", "descriptionHtml") || null,
-    skills:          Array.isArray(raw.skills) ? raw.skills
-                       : Array.isArray(raw.requiredSkills) ? raw.requiredSkills
-                       : Array.isArray(raw.jobSkills) ? raw.jobSkills
-                       : [],
-    listingUrl:      extractStr(raw, "jobUrl", "url", "link") || null,
-    applyUrl:        extractStr(raw, "applyUrl", "externalApplyUrl", "jobUrl", "url", "link") || null,
-    datePosted:      (raw.postedAt || raw.publishedAt || raw.datePosted || raw.postedDate || raw.postedTime || raw.listedAt)
-                       ? new Date(raw.postedAt || raw.publishedAt || raw.datePosted || raw.postedDate || raw.postedTime || raw.listedAt)
+    description:     extractStr(raw, "description", "descriptionText", "jobDescription") || null,
+    skills:          Array.isArray(raw.skills) ? raw.skills : [],
+    listingUrl:      extractStr(raw, "url", "jobUrl", "link", "applyUrl") || null,
+    applyUrl:        extractStr(raw, "applyUrl", "url", "jobUrl", "link") || null,
+    datePosted:      (raw.postedAt || raw.publishedAt || raw.datePosted || raw.listedAt)
+                       ? new Date(raw.postedAt || raw.publishedAt || raw.datePosted || raw.listedAt)
                        : null,
     isActive:        true,
   };
 }
 
-export async function runLinkedInWorker(keywords = ["software engineer", "product manager"]) {
+export async function runLinkedInWorker(keywords = ["software engineer"]) {
   console.error(`[LinkedIn Worker] Starting — keywords: ${keywords.join(", ")}`);
-
   try {
-    const run = await client.actor("worldunboxer/rapid-linkedin-scraper").call({
-      keywords,
-      location: "",        // global
-      datePosted: "past-week",
-      resultsPerPage: 50,
+    // Build LinkedIn search URLs for each keyword
+    const urls = keywords.map(kw => ({
+      url: `https://www.linkedin.com/jobs/search/?keywords=${encodeURIComponent(kw)}&f_TPR=r604800`
+    }));
+
+    const run = await client.actor("curious_coder/linkedin-jobs-scraper").call({
+      urls,
+      count: 50,
+      scrapeCompany: false,
+      timeout: 120,
+      memory: 1024,
     });
 
     const { items } = await client.dataset(run.defaultDatasetId).listItems();
     console.error(`[LinkedIn Worker] Got ${items.length} jobs`);
 
-    // Diagnostic: log raw field names of first item so schema changes are caught immediately
     if (items?.length) {
       console.error("[LinkedIn Worker] raw item keys:", Object.keys(items[0]));
-      const sample = normalizeLinkedInJob(items[0]);
-      if (sample.title === "Untitled" || sample.company === "Unknown") {
-        console.error("[LinkedIn Worker] ⚠️  title/company still empty after normalization — actor schema may have changed. First raw item:", JSON.stringify(items[0], null, 2));
-      }
     }
 
     let upserted = 0;
@@ -80,8 +85,7 @@ export async function runLinkedInWorker(keywords = ["software engineer", "produc
     console.error(`[LinkedIn Worker] ✅ Upserted ${upserted} jobs`);
     return { upserted };
   } catch (err) {
-    // LinkedIn scraper can fail — log but don't crash
-    console.error(`[LinkedIn Worker] ⚠️ Failed (non-critical): ${err.message}`);
+    console.error(`[LinkedIn Worker] ⚠️ Failed: ${err.message}`);
     return { upserted: 0, error: err.message };
   }
 }

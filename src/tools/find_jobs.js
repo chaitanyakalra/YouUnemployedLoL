@@ -1,95 +1,86 @@
 // find_jobs.js — Live on-demand job search with server-side fit scoring
-// Called only after set_profile confirms all required fields.
-// Returns STEP 4 table data: scored jobs ≥6, skip list, seniority flags.
+// Sources: LinkedIn (curious_coder/linkedin-jobs-scraper)
+//          Internshala (apify/web-scraper)
+//          Naukri     (stealth_mode/naukri-jobs-search-scraper)
+//          ATS x13    (jobo.world/ats-jobs-search)
+// Returns STEP 4 table: scored jobs ≥6, skip list, seniority flags.
 
 import { ApifyClient } from "apify-client";
 import { extractStr } from "../utils/extractStr.js";
+
 const client = new ApifyClient({ token: process.env.APIFY_API_KEY });
 
 // ─── Tool definition ──────────────────────────────────────────────────────────
 export const findJobsTool = {
   name: "find_jobs",
   description:
-    "Live job search across LinkedIn, Internshala, and 13 ATS platforms. " +
+    "Live job search across LinkedIn, Internshala, Naukri, and 13 ATS platforms. " +
     "Requires role — returns nothing without it. Scores every job against " +
     "the candidate profile server-side and emits STEP 4 table output only.",
   inputSchema: {
     type: "object",
     required: ["keywords", "location", "job_type"],
     properties: {
-      keywords:              { type: "string",  description: "Role keywords from set_profile. e.g. 'React developer'" },
-      location:              { type: "string",  description: "City or region. e.g. 'Noida', 'Delhi NCR', 'Remote'" },
-      job_type:              { type: "string",  description: "'full-time' | 'internship' | 'both'" },
-      posted_within:         { type: "string",  description: "'today' | '2 days' | 'this week' (default: 'this week')" },
-      max_results_per_source:{ type: "number",  description: "Max per scraper (default 25, max 50)" },
-      resume_text:           { type: "string",  description: "Resume text for scoring (from set_profile)" },
-      user_role:             { type: "string",  description: "Exact role string the user typed — used for title scoring" },
-      user_experience_level: { type: "string",  description: "e.g. 'fresher', '0-1 years', '1-3 years'" },
-      user_employment_type:  { type: "string",  description: "User's preferred type — used for +1 match signal" },
-      user_skills:           { type: "string",  description: "Comma-separated skills from set_profile" },
+      keywords:               { type: "string",  description: "Role keywords. e.g. 'React developer', 'Full Stack Developer'" },
+      location:               { type: "string",  description: "City or region. e.g. 'Noida', 'Delhi NCR', 'Remote'" },
+      job_type:               { type: "string",  description: "'full-time' | 'internship' | 'both'" },
+      posted_within:          { type: "string",  description: "'today' | '2 days' | 'this week' (default: 'this week')" },
+      max_results_per_source: { type: "number",  description: "Max per scraper (default 25, max 50)" },
+      resume_text:            { type: "string",  description: "Resume text for scoring (from set_profile)" },
+      user_role:              { type: "string",  description: "Exact role string the user typed — used for title scoring" },
+      user_experience_level:  { type: "string",  description: "e.g. 'fresher', '0-1 years', '1-3 years'" },
+      user_employment_type:   { type: "string",  description: "User's preferred type — used for +1 match signal" },
+      user_skills:            { type: "string",  description: "Comma-separated skills from set_profile" },
+      _mock:                  { type: "boolean", description: "Internal: use mock data for testing (skips Apify calls)" },
     },
   },
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-/**
- * Normalize free-text experience level strings into: "entry" | "mid" | "senior" | null
- */
 function normalizeLevel(s = "") {
   s = s.toLowerCase();
-  if (s.includes("entry") || s.includes("junior") || s.includes("fresher") || s.includes("intern") || s.includes("0-1") || s.includes("0 to 1")) return "entry";
+  if (s.includes("entry") || s.includes("junior") || s.includes("fresher") ||
+      s.includes("intern") || s.includes("0-1") || s.includes("0 to 1") || s.includes("trainee")) return "entry";
   if (s.includes("mid") || s.includes("1-3") || s.includes("2-4") || s.includes("associate")) return "mid";
   if (s.includes("senior") || s.includes("lead") || s.includes("principal") || s.includes("staff")) return "senior";
   if (s.includes("director") || s.includes("head of") || s.includes("vp") || s.includes("vice president")) return "senior";
   return null;
 }
 
-/**
- * Two-signal seniority stretch detection.
- * Returns true if the job is likely a stretch for the user's declared level.
- */
 function isStretch(jobTitle = "", jobExpLevel = "", userLevel = "") {
-  const seniorTitleWords = ["senior", "lead", "principal", "staff", "head of", "director", "vp ", "vice president"];
-  const titleStretch = seniorTitleWords.some((w) => jobTitle.toLowerCase().includes(w));
-
+  const seniorWords = ["senior", "lead", "principal", "staff", "head of", "director", "vp ", "vice president"];
+  const titleStretch = seniorWords.some((w) => jobTitle.toLowerCase().includes(w));
   const userNorm = normalizeLevel(userLevel);
   const jobNorm  = normalizeLevel(jobExpLevel);
-
   if (!userNorm) return false;
   if (userNorm === "entry" && (titleStretch || jobNorm === "senior")) return true;
-  if (userNorm === "mid" && (jobNorm === "senior" || jobTitle.toLowerCase().includes("director"))) return true;
+  if (userNorm === "mid"   && (jobNorm === "senior" || jobTitle.toLowerCase().includes("director"))) return true;
   return false;
 }
 
-/**
- * Derive the right hiring manager title to search for on LinkedIn,
- * based on the job title's domain keywords.
- */
 function getHiringManagerTitle(jobTitle = "") {
   const t = jobTitle.toLowerCase();
   if (/\b(data|analyst|scientist|analytics)\b/.test(t))    return '"Head of Data" OR "Data Engineering Manager"';
   if (/\b(product|pm|product manager)\b/.test(t))          return '"Director of Product" OR "VP Product"';
-  if (/\b(design|ux|ui|user experience)\b/.test(t))        return '"Head of Design" OR "Design Manager"';
-  if (/\b(devops|infra|platform|sre|cloud|devsecops)\b/.test(t)) return '"Head of Engineering" OR "VP Engineering"';
-  if (/\b(mobile|android|ios|flutter|react native)\b/.test(t))   return '"Engineering Manager" OR "Head of Mobile"';
-  if (/\b(backend|api|node|python|java|golang|go|rust|spring)\b/.test(t)) return '"Engineering Manager" OR "VP Engineering"';
-  if (/\b(frontend|react|angular|vue|next|svelte|typescript)\b/.test(t))  return '"Engineering Manager" OR "Frontend Lead"';
-  if (/\b(full.?stack|fullstack)\b/.test(t))               return '"CTO" OR "Engineering Manager"';
-  if (/\b(ml|ai|machine learning|deep learning|llm|nlp)\b/.test(t))       return '"Head of AI" OR "ML Engineering Manager"';
-  if (/\b(qa|quality|test|automation|sdet)\b/.test(t))     return '"QA Manager" OR "Engineering Manager"';
-  if (/\b(security|cybersecurity|infosec|soc)\b/.test(t))  return '"Head of Security" OR "CISO"';
+  if (/\b(design|ux|ui)\b/.test(t))                        return '"Head of Design" OR "Design Manager"';
+  if (/\b(devops|infra|platform|sre|cloud)\b/.test(t))     return '"Head of Engineering" OR "VP Engineering"';
+  if (/\b(mobile|android|ios|flutter)\b/.test(t))          return '"Engineering Manager" OR "Head of Mobile"';
+  if (/\b(backend|api|node|python|golang)\b/.test(t))      return '"Engineering Manager" OR "VP Engineering"';
+  if (/\b(frontend|react|angular|vue|next)\b/.test(t))     return '"Engineering Manager" OR "Frontend Lead"';
+  if (/\b(full.?stack|fullstack|mern)\b/.test(t))          return '"CTO" OR "Engineering Manager"';
+  if (/\b(ml|ai|machine learning|llm|nlp|genai)\b/.test(t)) return '"Head of AI" OR "ML Engineering Manager"';
+  if (/\b(intern|trainee|junior)\b/.test(t))               return '"Engineering Manager" OR "HR Manager"';
   return '"Engineering Manager"';
 }
 
-/**
- * Server-side deterministic fit score (0–10).
- * Claude uses this as the baseline and may adjust ±1 for description nuance.
- */
-function computeFitScore({ jobTitle, jobExpLevel, jobIsRemote, jobLocation, jobSkills = [], jobEmploymentType }, { userRole, userExpLevel, userLocation, userEmploymentType, userSkillsArr = [] }) {
+function computeFitScore(
+  { jobTitle, jobExpLevel, jobIsRemote, jobLocation, jobSkills = [], jobEmploymentType },
+  { userRole, userExpLevel, userLocation, userEmploymentType, userSkillsArr = [] }
+) {
   let score = 0;
 
-  // +3 — Title keyword match (any word from user_role)
+  // +3 — Title keyword match
   if (userRole) {
     const roleWords = userRole.toLowerCase().split(/\s+/).filter((w) => w.length > 2);
     const titleLow  = jobTitle.toLowerCase();
@@ -101,8 +92,7 @@ function computeFitScore({ jobTitle, jobExpLevel, jobIsRemote, jobLocation, jobS
     const userNorm = normalizeLevel(userExpLevel);
     const jobNorm  = normalizeLevel(jobExpLevel);
     if (userNorm && jobNorm && userNorm === jobNorm) score += 2;
-    // Partial credit: if job level is null (not specified), give +1 — generous
-    else if (userNorm && !jobNorm) score += 1;
+    else if (userNorm && !jobNorm) score += 1; // unspecified = partial credit
   }
 
   // +1 — Employment type match
@@ -120,11 +110,10 @@ function computeFitScore({ jobTitle, jobExpLevel, jobIsRemote, jobLocation, jobS
       score += 2;
     } else if (!isRemotePref && jobLocation) {
       const jobLocLow = jobLocation.toLowerCase();
-      if (jobLocLow.includes(locLow) || locLow.split(/[\s,]+/).some((word) => word.length > 2 && jobLocLow.includes(word))) {
+      if (jobLocLow.includes(locLow) || locLow.split(/[\s,]+/).some((w) => w.length > 2 && jobLocLow.includes(w))) {
         score += 2;
       }
     } else if (jobIsRemote) {
-      // Remote job when user wants on-site → partial
       score += 1;
     }
   }
@@ -139,123 +128,258 @@ function computeFitScore({ jobTitle, jobExpLevel, jobIsRemote, jobLocation, jobS
   return Math.min(score, 10);
 }
 
-// ─── Apify scraper calls ──────────────────────────────────────────────────────
+// ─── date filter helpers ──────────────────────────────────────────────────────
 
-/**
- * Map posted_within string to the date filter value used by worldunboxer/rapid-linkedin-scraper.
- */
-function postedWithinToLinkedIn(posted = "this week") {
+function postedWithinToTPR(posted = "this week") {
   const p = posted.toLowerCase();
-  if (p.includes("today") || p.includes("24"))    return "past-24h";
-  if (p.includes("2 day") || p.includes("two"))   return "past-week";
-  return "past-week"; // default: "this week"
+  if (p.includes("today") || p.includes("24h")) return "r86400";    // 24h
+  if (p.includes("2 day") || p.includes("two")) return "r172800";   // 48h
+  return "r604800";                                                  // 1 week (default)
 }
 
+// ─── Scrapers ─────────────────────────────────────────────────────────────────
+
 async function scrapeLinkedIn({ keywords, location, job_type, posted_within, max }) {
-  const input = {
-    keywords: [keywords],   // actor expects an array of search strings
-    location,
-    datePosted: postedWithinToLinkedIn(posted_within),
-    resultsPerPage: max,
-    proxy: { useApifyProxy: true },
-  };
+  // Build one URL per keyword×location combo using the f_TPR filter
+  // curious_coder/linkedin-jobs-scraper accepts { urls: [{url}], count, scrapeCompany }
+  const tpr = postedWithinToTPR(posted_within);
+
+  const keywordList = keywords.split(",").map(k => k.trim()).filter(Boolean);
+  const locationList = location.split(",").map(l => l.trim()).filter(Boolean);
+
+  const urls = keywordList.flatMap(kw =>
+    locationList.map(loc => ({
+      url: `https://www.linkedin.com/jobs/search/?keywords=${encodeURIComponent(kw)}&location=${encodeURIComponent(loc)}&f_TPR=${tpr}&position=1&pageNum=0`
+    }))
+  );
+
   try {
-    const run = await client.actor("worldunboxer/rapid-linkedin-scraper").call(input, { waitSecs: 90 });
+    const run = await client.actor("curious_coder/linkedin-jobs-scraper").call(
+      { urls, count: max, scrapeCompany: false, timeout: 120, memory: 1024 },
+      { waitSecs: 120 }
+    );
     const { items } = await client.dataset(run.defaultDatasetId).listItems();
 
-    // Diagnostic: log the raw keys of the first item so schema changes are visible in server logs
+    // Log raw keys of first item to Render logs — helps detect future schema changes
     if (items?.length) {
-      console.error("[LinkedIn scrape] raw item keys:", Object.keys(items[0]));
+      console.error("[LinkedIn] raw item keys:", Object.keys(items[0]));
+      const sample = items[0];
+      if (!extractStr(sample, "title", "jobTitle", "positionName")) {
+        console.error("[LinkedIn] ⚠️ title empty — full first item:", JSON.stringify(sample, null, 2));
+      }
     }
 
     return (items || []).map((i) => {
       const title    = extractStr(i, "title", "jobTitle", "positionName", "name");
-      const company  = extractStr(i, "company", "companyName", "organizationName", "hiringOrganization");
-      const location = extractStr(i, "location", "jobLocation", "place", "workLocation", "formattedLocation");
-      const workType = extractStr(i, "workType", "workplaceType", "remoteType", "workplaceTypes");
-
-      // Emit a warning if critical fields are still empty after all fallbacks
-      if (!title || !company) {
-        console.error("[LinkedIn scrape] ⚠️  Empty title/company after normalization. Raw keys:", Object.keys(i));
-      }
+      const company  = extractStr(i, "company", "companyName", "companyTitle", "organizationName");
+      const loc      = extractStr(i, "location", "formattedLocation", "jobLocation", "place");
+      const workType = extractStr(i, "workType", "workplaceType", "remoteAllowed");
 
       return {
-        title,
-        company,
-        location,
-        isRemote:        /remote/i.test(location) || /remote/i.test(workType),
-        applyUrl:        extractStr(i, "jobUrl", "url", "applyUrl", "link", "externalApplyUrl"),
-        datePosted:      i.postedAt || i.publishedAt || i.datePosted || i.postedDate || i.postedTime || i.listedAt || null,
-        experienceLevel: extractStr(i, "seniorityLevel", "experienceLevel", "seniority", "seniorityLevelText"),
+        title:           title || "Untitled",
+        company:         company || "Unknown",
+        location:        loc || location,
+        isRemote:        /remote/i.test(loc) || /remote/i.test(workType),
+        applyUrl:        extractStr(i, "url", "jobUrl", "applyUrl", "link"),
+        datePosted:      i.postedAt || i.publishedAt || i.datePosted || i.listedAt || null,
+        experienceLevel: extractStr(i, "seniorityLevel", "experienceLevel", "seniority"),
         employmentType:  extractStr(i, "employmentType", "contractType", "jobType"),
-        skills:          Array.isArray(i.skills) ? i.skills
-                           : Array.isArray(i.requiredSkills) ? i.requiredSkills
-                           : Array.isArray(i.jobSkills) ? i.jobSkills
-                           : [],
-        source:          "linkedin",
+        skills:          Array.isArray(i.skills) ? i.skills : [],
+        source:          "LinkedIn",
       };
     });
   } catch (err) {
-    console.error("LinkedIn scrape error:", err.message);
+    console.error("[LinkedIn] scrape error:", err.message);
     return [];
   }
 }
 
-async function scrapeInternshala({ keywords, location, job_type, max }) {
-  if (job_type === "full-time") return []; // Internshala is internship-focused
-  const slug = encodeURIComponent(keywords.toLowerCase().replace(/\s+/g, "-"));
-  const locSlug = encodeURIComponent(location.toLowerCase().replace(/\s+/g, "-"));
+async function scrapeNaukri({ keywords, location, job_type, max }) {
+  // stealth_mode/naukri-jobs-search-scraper
+  try {
+    const run = await client.actor("stealth_mode/naukri-jobs-search-scraper").call(
+      { keywords: [keywords], location, maxResults: max },
+      { waitSecs: 90 }
+    );
+    const { items } = await client.dataset(run.defaultDatasetId).listItems();
+
+    if (items?.length) {
+      console.error("[Naukri] raw item keys:", Object.keys(items[0]));
+    }
+
+    return (items || []).map((i) => ({
+      title:           i.title || i.jobTitle || "Untitled",
+      company:         i.company || i.companyName || "Unknown",
+      location:        Array.isArray(i.locations) ? i.locations.join(", ") : i.location || location,
+      isRemote:        (i.workMode || "").toLowerCase().includes("remote"),
+      applyUrl:        i.applyUrl || i.url || null,
+      datePosted:      i.postedDate || null,
+      experienceLevel: i.experience || null,
+      employmentType:  i.jobType || job_type || null,
+      skills:          Array.isArray(i.skills) ? i.skills : [],
+      source:          "Naukri",
+    }));
+  } catch (err) {
+    console.error("[Naukri] scrape error:", err.message);
+    return [];
+  }
+}
+
+async function scrapeATS({ keywords, location, job_type, max }) {
+  // jobo.world/ats-jobs-search — covers Greenhouse, Lever, Workday, Ashby, etc.
   const isRemotePref = /remote/i.test(location);
-  const startUrl = isRemotePref
+  try {
+    const run = await client.actor("jobo.world/ats-jobs-search").call(
+      { queries: [keywords], is_remote: isRemotePref, page_size: max },
+      { waitSecs: 90 }
+    );
+    const { items } = await client.dataset(run.defaultDatasetId).listItems();
+
+    if (items?.length) {
+      console.error("[ATS] raw item keys:", Object.keys(items[0]));
+    }
+
+    return (items || []).map((i) => ({
+      title:           i.title || "Untitled",
+      company:         i.company?.name || i.company || "Unknown",
+      location:        i.locations?.[0]
+                         ? [i.locations[0].city, i.locations[0].country].filter(Boolean).join(", ")
+                         : location,
+      isRemote:        i.locations?.[0]?.is_remote || i.is_remote || isRemotePref,
+      applyUrl:        i.apply_url || i.listing_url || null,
+      datePosted:      i.date_posted || null,
+      experienceLevel: i.experience_level || null,
+      employmentType:  i.employment_type || job_type || null,
+      skills:          Array.isArray(i.skills) ? i.skills : [],
+      source:          i.source || "ATS",
+    }));
+  } catch (err) {
+    console.error("[ATS] scrape error:", err.message);
+    return [];
+  }
+}
+
+async function scrapeInternshala({ keywords, location, max }) {
+  const slug    = encodeURIComponent(keywords.toLowerCase().replace(/\s+/g, "-"));
+  const locSlug = encodeURIComponent(location.toLowerCase().replace(/\s+/g, "-"));
+  const isRemote = /remote/i.test(location);
+  const startUrl = isRemote
     ? `https://internshala.com/internships/${slug}-internship/`
     : `https://internshala.com/internships/${slug}-internship-in-${locSlug}/`;
+
   try {
     const run = await client.actor("apify/web-scraper").call({
       startUrls: [{ url: startUrl }],
       pageFunction: `async function pageFunction(context) {
-        const { $, request } = context;
+        const { $ } = context;
         const jobs = [];
-        // Try current and legacy selectors for resilience
-        const containers = $(".individual_internship, .internship-item, [data-internship_id]");
-        containers.each((i, el) => {
+        $(".individual_internship, .internship-item, [data-internship_id]").each((i, el) => {
           const $el = $(el);
-          const title =
-            $el.find(".profile h3, .profile .heading_4_5, h3.heading_4_5").first().text().trim() ||
-            $el.find(".profile").first().text().trim();
-          const company =
-            $el.find(".company_name a, .company_name, .company-name a, .company-name").first().text().trim();
-          const location =
-            $el.find(".location_link, .locations span, .location span").first().text().trim() || "Remote";
-          const relPath =
-            $el.find("a.view_detail_button, a[href*='/internship/detail/']").first().attr("href") || "";
-          const applyUrl = relPath.startsWith("http") ? relPath : "https://internshala.com" + relPath;
-          if (title) {
-            jobs.push({
-              title,
-              company,
-              location,
-              applyUrl,
-              datePosted: null,
-              isRemote: /remote/i.test(location),
-            });
-          }
+          const title   = $el.find(".profile h3, h3.heading_4_5, .profile .heading_4_5").first().text().trim();
+          const company = $el.find(".company_name a, .company_name").first().text().trim();
+          const location= $el.find(".location_link, .locations span").first().text().trim() || "Remote";
+          const relPath = $el.find("a.view_detail_button, a[href*='/internship/detail/']").first().attr("href") || "";
+          const applyUrl= relPath.startsWith("http") ? relPath : "https://internshala.com" + relPath;
+          if (title) jobs.push({ title, company, location, applyUrl, isRemote: /remote/i.test(location) });
         });
         return jobs.slice(0, ${max});
       }`,
       proxyConfiguration: { useApifyProxy: true },
     }, { waitSecs: 60 });
     const { items } = await client.dataset(run.defaultDatasetId).listItems();
+
     return items.flat().filter(Boolean).map((i) => ({
       ...i,
+      datePosted:      null,
       experienceLevel: "internship",
       employmentType:  "internship",
-      skills: [],
-      source: "internshala",
+      skills:          [],
+      source:          "Internshala",
     }));
   } catch (err) {
-    console.error("Internshala scrape error:", err.message);
+    console.error("[Internshala] scrape error:", err.message);
     return [];
   }
+}
+
+// ─── Mock data (used when _mock: true or APIFY_API_KEY not set) ───────────────
+
+function getMockJobs(keywords, location) {
+  const kw = keywords.toLowerCase();
+  return [
+    {
+      title: "Full Stack Developer Intern",
+      company: "TechCorp India",
+      location: location || "Noida",
+      isRemote: false,
+      applyUrl: "https://linkedin.com/jobs/view/mock-1",
+      datePosted: new Date(Date.now() - 1 * 86400000).toISOString(),
+      experienceLevel: "entry",
+      employmentType: "internship",
+      skills: ["React", "Node.js", "MongoDB"],
+      source: "LinkedIn (mock)",
+    },
+    {
+      title: "MERN Stack Developer",
+      company: "StartupXYZ",
+      location: location || "Gurugram",
+      isRemote: false,
+      applyUrl: "https://linkedin.com/jobs/view/mock-2",
+      datePosted: new Date(Date.now() - 0 * 86400000).toISOString(),
+      experienceLevel: "entry",
+      employmentType: "full-time",
+      skills: ["React", "Express.js", "Node.js", "MongoDB"],
+      source: "LinkedIn (mock)",
+    },
+    {
+      title: "Backend Developer Trainee",
+      company: "Infosys",
+      location: "Noida",
+      isRemote: false,
+      applyUrl: "https://naukri.com/jobs/mock-3",
+      datePosted: new Date(Date.now() - 2 * 86400000).toISOString(),
+      experienceLevel: "entry",
+      employmentType: "full-time",
+      skills: ["Node.js", "Python", "REST API"],
+      source: "Naukri (mock)",
+    },
+    {
+      title: "Junior Software Developer",
+      company: "Wipro Digital",
+      location: "Gurugram",
+      isRemote: false,
+      applyUrl: "https://lever.co/jobs/mock-4",
+      datePosted: new Date(Date.now() - 1 * 86400000).toISOString(),
+      experienceLevel: "entry",
+      employmentType: "full-time",
+      skills: ["JavaScript", "TypeScript", "React"],
+      source: "ATS (mock)",
+    },
+    {
+      title: "Senior Software Architect",
+      company: "BigCorp",
+      location: "Delhi",
+      isRemote: false,
+      applyUrl: "https://greenhouse.io/jobs/mock-5",
+      datePosted: new Date(Date.now() - 3 * 86400000).toISOString(),
+      experienceLevel: "senior",
+      employmentType: "full-time",
+      skills: ["Java", "Microservices", "Kubernetes"],
+      source: "ATS (mock)",
+    },
+    {
+      title: "React Developer Intern",
+      company: "FinTech Startup",
+      location: location || "Remote",
+      isRemote: true,
+      applyUrl: "https://internshala.com/jobs/mock-6",
+      datePosted: new Date(Date.now() - 0 * 86400000).toISOString(),
+      experienceLevel: "internship",
+      employmentType: "internship",
+      skills: ["React", "JavaScript", "Tailwind CSS"],
+      source: "Internshala (mock)",
+    },
+  ];
 }
 
 // ─── Gate helpers ─────────────────────────────────────────────────────────────
@@ -268,46 +392,74 @@ function buildGateMessage(missing) {
   );
 }
 
-// ─── Main function ────────────────────────────────────────────────────────────
+// ─── Main ─────────────────────────────────────────────────────────────────────
 
 export async function findJobs(args) {
   const {
     keywords,
     location,
     job_type,
-    posted_within     = "this week",
+    posted_within          = "this week",
     max_results_per_source = 25,
     user_role,
     user_experience_level,
     user_employment_type,
     user_skills,
+    _mock                  = false,
   } = args || {};
 
-  // ── Gate: internal validation (fires regardless of schema required fields) ──
+  // Gate: require all three core params
   const missing = [];
-  if (!keywords) missing.push("target role/keywords (e.g. 'React developer', 'Backend Engineer')");
+  if (!keywords) missing.push("target role/keywords (e.g. 'React developer', 'Full Stack Developer')");
   if (!location) missing.push("location (e.g. 'Noida', 'Delhi NCR', 'Remote')");
   if (!job_type) missing.push("job type — 'full-time', 'internship', or 'both'");
   if (missing.length) return buildGateMessage(missing);
 
   const max          = Math.min(max_results_per_source || 25, 50);
   const userSkillsArr = user_skills ? user_skills.split(",").map((s) => s.trim()).filter(Boolean) : [];
+  const useMock      = _mock || !process.env.APIFY_API_KEY;
 
-  // ── Scrape ────────────────────────────────────────────────────────────────
-  const [linkedInJobs, internshalaJobs] = await Promise.all([
-    scrapeLinkedIn({ keywords, location, job_type, posted_within, max }),
-    (job_type === "internship" || job_type === "both")
-      ? scrapeInternshala({ keywords, location, job_type, max })
-      : Promise.resolve([]),
-  ]);
+  // ── Scrape all sources in parallel ────────────────────────────────────────
+  let allJobs = [];
 
-  const allJobs = [...linkedInJobs, ...internshalaJobs];
+  if (useMock) {
+    console.error("[find_jobs] ⚠️  Using mock data (APIFY_API_KEY not set or _mock=true)");
+    allJobs = getMockJobs(keywords, location);
+  } else {
+    const sources = [];
 
+    // LinkedIn — always
+    sources.push(scrapeLinkedIn({ keywords, location, job_type, posted_within, max }));
+
+    // Naukri — always (India-focused)
+    sources.push(scrapeNaukri({ keywords, location, job_type, max }));
+
+    // Internshala — only for internship or both
+    if (job_type === "internship" || job_type === "both") {
+      sources.push(scrapeInternshala({ keywords, location, max }));
+    } else {
+      sources.push(Promise.resolve([]));
+    }
+
+    // ATS — only for full-time or both
+    if (job_type === "full-time" || job_type === "both") {
+      sources.push(scrapeATS({ keywords, location, job_type, max }));
+    } else {
+      sources.push(Promise.resolve([]));
+    }
+
+    const results = await Promise.allSettled(sources);
+    for (const r of results) {
+      if (r.status === "fulfilled") allJobs.push(...(r.value || []));
+    }
+  }
+
+  // ── Handle no results ─────────────────────────────────────────────────────
   if (!allJobs.length) {
     return [
       `## No jobs found`,
       ``,
-      `No results from LinkedIn or Internshala for **"${keywords}"** in **${location}** (posted: ${posted_within}).`,
+      `No results from any source for **"${keywords}"** in **${location}** (posted: ${posted_within}).`,
       ``,
       `**Try:**`,
       `- Broadening keywords (e.g. "React" → "Frontend Developer")`,
@@ -316,7 +468,7 @@ export async function findJobs(args) {
     ].join("\n");
   }
 
-  // ── Score + flag each job ─────────────────────────────────────────────────
+  // ── Score + flag ──────────────────────────────────────────────────────────
   const scored = allJobs.map((job) => {
     const fitScore = computeFitScore(
       {
@@ -328,20 +480,18 @@ export async function findJobs(args) {
         jobEmploymentType: job.employmentType,
       },
       {
-        userRole:            user_role           || keywords,
-        userExpLevel:        user_experience_level || "",
-        userLocation:        location,
-        userEmploymentType:  user_employment_type || job_type,
+        userRole:           user_role           || keywords,
+        userExpLevel:       user_experience_level || "",
+        userLocation:       location,
+        userEmploymentType: user_employment_type  || job_type,
         userSkillsArr,
       }
     );
 
-    const stretch = isStretch(job.title, job.experienceLevel, user_experience_level || "");
-
-    const daysAgo = job.datePosted
+    const stretch  = isStretch(job.title, job.experienceLevel, user_experience_level || "");
+    const daysAgo  = job.datePosted
       ? Math.floor((Date.now() - new Date(job.datePosted)) / 86_400_000)
       : null;
-
     const hmTitle        = getHiringManagerTitle(job.title);
     const city           = (job.location || location).split(",")[0].trim();
     const hmSearchString = `${hmTitle} "${job.company}" "${city}"`;
@@ -349,7 +499,7 @@ export async function findJobs(args) {
     return { ...job, fitScore, stretch, daysAgo, hmSearchString };
   });
 
-  // Sort: most recently posted first, then fit score desc
+  // Sort: newest first, then fit score desc
   scored.sort((a, b) => {
     const aDate = a.datePosted ? new Date(a.datePosted).getTime() : 0;
     const bDate = b.datePosted ? new Date(b.datePosted).getTime() : 0;
@@ -360,28 +510,29 @@ export async function findJobs(args) {
   const showJobs = scored.filter((j) => j.fitScore >= 6);
   const skipJobs = scored.filter((j) => j.fitScore < 6);
 
-  // ── STEP 4 — Main Table ───────────────────────────────────────────────────
+  // ── STEP 4 Output ─────────────────────────────────────────────────────────
+  const sourceCount = [...new Set(allJobs.map(j => j.source))].join(", ");
   const lines = [
     `## STEP 4 — Job Search Results`,
     ``,
     `**Search:** "${keywords}" | **Location:** ${location} | **Type:** ${job_type} | **Posted:** ${posted_within}`,
+    `**Sources:** ${sourceCount}`,
     `**Total found:** ${allJobs.length} | **Showing:** ${showJobs.length} (fit ≥ 6/10) | **Skipping:** ${skipJobs.length}`,
-    ``,
-    `> **Score baseline is server-computed. You may adjust ±1 based on description nuance. Display as-is unless you have a specific reason.**`,
+    useMock ? `\n> ⚠️ **MOCK MODE** — using test data, not live Apify results.\n` : ``,
+    `> **Score baseline is server-computed. You may adjust ±1 based on description nuance.**`,
     ``,
   ];
 
   if (showJobs.length) {
     lines.push(
-      "| Role | Company | Posted | Fit Score | Apply Link | Hiring Manager Search Tips |",
-      "|------|---------|--------|-----------|------------|----------------------------|",
+      "| Role | Company | Source | Posted | Fit Score | Apply Link | Hiring Manager Search Tips |",
+      "|------|---------|--------|--------|-----------|------------|----------------------------|",
       ...showJobs.map((j) => {
-        const roleCell  = `${j.stretch ? "⚠️ " : ""}${j.title}`;
+        const roleCell   = `${j.stretch ? "⚠️ " : ""}${j.title}`;
         const postedCell = j.daysAgo !== null ? `${j.daysAgo}d ago` : "—";
-        const scoreCell = `${j.fitScore}/10`;
-        const applyCell = j.applyUrl ? `[Apply](${j.applyUrl})` : "—";
-        const hmCell    = `\`${j.hmSearchString}\``;
-        return `| ${roleCell} | ${j.company} | ${postedCell} | ${scoreCell} | ${applyCell} | ${hmCell} |`;
+        const applyCell  = j.applyUrl ? `[Apply](${j.applyUrl})` : "—";
+        const hmCell     = `\`${j.hmSearchString}\``;
+        return `| ${roleCell} | ${j.company} | ${j.source} | ${postedCell} | ${j.fitScore}/10 | ${applyCell} | ${hmCell} |`;
       }),
       ""
     );
@@ -389,7 +540,6 @@ export async function findJobs(args) {
     lines.push(`_No jobs met the ≥ 6/10 fit threshold. See skip list below._`, ``);
   }
 
-  // ── Skip List ─────────────────────────────────────────────────────────────
   if (skipJobs.length) {
     lines.push(
       `## Jobs to Skip`,
@@ -397,16 +547,15 @@ export async function findJobs(args) {
       ...skipJobs.map((j) => {
         let reason = `Fit score ${j.fitScore}/10`;
         if (j.stretch) reason += " — seniority stretch";
-        if (j.fitScore <= 3) reason += " — role/location mismatch";
-        return `- **${j.title}** at ${j.company} — ${reason}`;
+        else if (j.fitScore <= 3) reason += " — role/location mismatch";
+        return `- **${j.title}** at ${j.company} (${j.source}) — ${reason}`;
       }),
       ``
     );
   }
 
-  // ── Footer note about ⚠️ ─────────────────────────────────────────────────
   if (showJobs.some((j) => j.stretch)) {
-    lines.push(`> ⚠️ = Seniority may be a stretch based on your declared experience level. Apply if you meet 70%+ of the requirements.`);
+    lines.push(`> ⚠️ = Seniority may be a stretch. Apply if you meet 70%+ of the requirements.`);
   }
 
   return lines.join("\n");
