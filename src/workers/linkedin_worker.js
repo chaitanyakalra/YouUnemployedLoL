@@ -9,8 +9,8 @@ const client = new ApifyClient({ token: process.env.APIFY_API_KEY });
 //   id, title, company, companyUrl, location, url, postedAt,
 //   seniorityLevel, employmentType, description, skills[]
 function normalizeLinkedInJob(raw) {
-  const title    = extractStr(raw, "title", "jobTitle", "positionName", "name") || "Untitled";
-  const company  = extractStr(raw, "company", "companyName", "companyTitle", "organizationName") || "Unknown";
+  const title    = extractStr(raw, "title", "jobTitle", "job_title", "positionName", "name") || "Untitled";
+  const company  = extractStr(raw, "company", "companyName", "company_name", "companyTitle", "organizationName") || "Unknown";
   const location = extractStr(raw, "location", "jobLocation", "formattedLocation", "place");
   const workType = extractStr(raw, "workType", "workplaceType", "remoteAllowed");
 
@@ -20,11 +20,11 @@ function normalizeLinkedInJob(raw) {
   }
 
   return {
-    externalId:      raw.id || raw.url || raw.jobUrl || String(Math.random()),
+    externalId:      raw.id || raw.job_id || raw.url || raw.jobUrl || raw.job_url || String(Math.random()),
     source:          "linkedin",
     title,
     company,
-    companyLogo:     raw.companyLogo || raw.logo || null,
+    companyLogo:     raw.companyLogo || raw.company_logo_url || raw.logo || null,
     companyWebsite:  null,
     location:        location || null,
     city:            null,
@@ -34,15 +34,15 @@ function normalizeLinkedInJob(raw) {
     salaryMax:       raw.salaryMax || raw.salary?.max || null,
     salaryCurrency:  "USD",
     salaryPeriod:    "yearly",
-    employmentType:  extractStr(raw, "employmentType", "contractType", "jobType") || null,
-    experienceLevel: (extractStr(raw, "seniorityLevel", "experienceLevel", "seniority") || null)?.toLowerCase() || null,
+    employmentType:  extractStr(raw, "employmentType", "employment_type", "contractType", "jobType") || null,
+    experienceLevel: (extractStr(raw, "seniorityLevel", "seniority_level", "experienceLevel", "seniority") || null)?.toLowerCase() || null,
     department:      null,
     description:     extractStr(raw, "description", "descriptionText", "jobDescription") || null,
     skills:          Array.isArray(raw.skills) ? raw.skills : [],
-    listingUrl:      extractStr(raw, "url", "jobUrl", "link", "applyUrl") || null,
-    applyUrl:        extractStr(raw, "applyUrl", "url", "jobUrl", "link") || null,
-    datePosted:      (raw.postedAt || raw.publishedAt || raw.datePosted || raw.listedAt)
-                       ? new Date(raw.postedAt || raw.publishedAt || raw.datePosted || raw.listedAt)
+    listingUrl:      extractStr(raw, "url", "jobUrl", "job_url", "link", "applyUrl", "apply_url") || null,
+    applyUrl:        extractStr(raw, "applyUrl", "apply_url", "url", "jobUrl", "job_url", "link") || null,
+    datePosted:      (raw.postedAt || raw.publishedAt || raw.datePosted || raw.listedAt || raw.time_posted)
+                       ? new Date(raw.postedAt || raw.publishedAt || raw.datePosted || raw.listedAt || raw.time_posted)
                        : null,
     isActive:        true,
   };

@@ -10,6 +10,19 @@ import { extractStr } from "../utils/extractStr.js";
 
 const client = new ApifyClient({ token: process.env.APIFY_API_KEY });
 
+// ─── Timeout wrapper — ensures no single scraper blocks beyond the limit ──────
+function withTimeout(promise, ms = 60_000, label = "scraper") {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`${label} timed out after ${ms / 1000}s`)), ms)
+    ),
+  ]).catch((err) => {
+    console.error(`[${label}] ${err.message}`);
+    return [];
+  });
+}
+
 // ─── Tool definition ──────────────────────────────────────────────────────────
 export const findJobsTool = {
   name: "find_jobs",
@@ -155,8 +168,8 @@ async function scrapeLinkedIn({ keywords, location, job_type, posted_within, max
 
   try {
     const run = await client.actor("curious_coder/linkedin-jobs-scraper").call(
-      { urls, count: max, scrapeCompany: false, timeout: 120, memory: 1024 },
-      { waitSecs: 120 }
+      { urls, count: max, scrapeCompany: false, timeout: 60, memory: 1024 },
+      { waitSecs: 60 }
     );
     const { items } = await client.dataset(run.defaultDatasetId).listItems();
 
@@ -170,8 +183,8 @@ async function scrapeLinkedIn({ keywords, location, job_type, posted_within, max
     }
 
     return (items || []).map((i) => {
-      const title    = extractStr(i, "title", "jobTitle", "positionName", "name");
-      const company  = extractStr(i, "company", "companyName", "companyTitle", "organizationName");
+      const title    = extractStr(i, "title", "jobTitle", "job_title", "positionName", "name");
+      const company  = extractStr(i, "company", "companyName", "company_name", "companyTitle", "organizationName");
       const loc      = extractStr(i, "location", "formattedLocation", "jobLocation", "place");
       const workType = extractStr(i, "workType", "workplaceType", "remoteAllowed");
 
@@ -180,10 +193,10 @@ async function scrapeLinkedIn({ keywords, location, job_type, posted_within, max
         company:         company || "Unknown",
         location:        loc || location,
         isRemote:        /remote/i.test(loc) || /remote/i.test(workType),
-        applyUrl:        extractStr(i, "url", "jobUrl", "applyUrl", "link"),
-        datePosted:      i.postedAt || i.publishedAt || i.datePosted || i.listedAt || null,
-        experienceLevel: extractStr(i, "seniorityLevel", "experienceLevel", "seniority"),
-        employmentType:  extractStr(i, "employmentType", "contractType", "jobType"),
+        applyUrl:        extractStr(i, "url", "jobUrl", "job_url", "applyUrl", "apply_url", "link"),
+        datePosted:      i.postedAt || i.publishedAt || i.datePosted || i.listedAt || i.time_posted || null,
+        experienceLevel: extractStr(i, "seniorityLevel", "seniority_level", "experienceLevel", "seniority"),
+        employmentType:  extractStr(i, "employmentType", "employment_type", "contractType", "jobType"),
         skills:          Array.isArray(i.skills) ? i.skills : [],
         source:          "LinkedIn",
       };
@@ -199,7 +212,7 @@ async function scrapeNaukri({ keywords, location, job_type, max }) {
   try {
     const run = await client.actor("stealth_mode/naukri-jobs-search-scraper").call(
       { keywords: [keywords], location, maxResults: max },
-      { waitSecs: 90 }
+      { waitSecs: 60 }
     );
     const { items } = await client.dataset(run.defaultDatasetId).listItems();
 
@@ -231,7 +244,7 @@ async function scrapeATS({ keywords, location, job_type, max }) {
   try {
     const run = await client.actor("jobo.world/ats-jobs-search").call(
       { queries: [keywords], is_remote: isRemotePref, page_size: max },
-      { waitSecs: 90 }
+      { waitSecs: 60 }
     );
     const { items } = await client.dataset(run.defaultDatasetId).listItems();
 
@@ -428,22 +441,22 @@ export async function findJobs(args) {
   } else {
     const sources = [];
 
-    // LinkedIn — always
-    sources.push(scrapeLinkedIn({ keywords, location, job_type, posted_within, max }));
+    // LinkedIn — always (hard cap: 60s)
+    sources.push(withTimeout(scrapeLinkedIn({ keywords, location, job_type, posted_within, max }), 60_000, "LinkedIn"));
 
-    // Naukri — always (India-focused)
-    sources.push(scrapeNaukri({ keywords, location, job_type, max }));
+    // Naukri — always, India-focused (hard cap: 60s)
+    sources.push(withTimeout(scrapeNaukri({ keywords, location, job_type, max }), 60_000, "Naukri"));
 
-    // Internshala — only for internship or both
+    // Internshala — only for internship or both (hard cap: 45s)
     if (job_type === "internship" || job_type === "both") {
-      sources.push(scrapeInternshala({ keywords, location, max }));
+      sources.push(withTimeout(scrapeInternshala({ keywords, location, max }), 45_000, "Internshala"));
     } else {
       sources.push(Promise.resolve([]));
     }
 
-    // ATS — only for full-time or both
+    // ATS — only for full-time or both (hard cap: 60s)
     if (job_type === "full-time" || job_type === "both") {
-      sources.push(scrapeATS({ keywords, location, job_type, max }));
+      sources.push(withTimeout(scrapeATS({ keywords, location, job_type, max }), 60_000, "ATS"));
     } else {
       sources.push(Promise.resolve([]));
     }
