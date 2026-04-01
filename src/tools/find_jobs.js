@@ -209,10 +209,10 @@ async function scrapeLinkedIn({ keywords, location, job_type, posted_within, max
 }
 
 async function scrapeNaukri({ keywords, location, job_type, max }) {
-  // stealth_mode/naukri-jobs-search-scraper
+  // apify/naukri-scraper is the official/maintained actor for Naukri
   try {
-    const run = await client.actor("stealth_mode/naukri-jobs-search-scraper").call(
-      { keywords: [keywords], location, maxResults: max },
+    const run = await client.actor("apify/naukri-scraper").call(
+      { searchQuery: keywords, location, maxItems: max },
       { waitSecs: 60 }
     );
     const { items } = await client.dataset(run.defaultDatasetId).listItems();
@@ -222,14 +222,14 @@ async function scrapeNaukri({ keywords, location, job_type, max }) {
     }
 
     return (items || []).map((i) => ({
-      title:           i.title || i.jobTitle || "Untitled",
-      company:         i.company || i.companyName || "Unknown",
-      location:        Array.isArray(i.locations) ? i.locations.join(", ") : i.location || location,
-      isRemote:        (i.workMode || "").toLowerCase().includes("remote"),
-      applyUrl:        i.applyUrl || i.url || null,
-      datePosted:      i.postedDate || null,
-      experienceLevel: i.experience || null,
-      employmentType:  i.jobType || job_type || null,
+      title:           i.title || i.job_title || i.jobTitle || "Untitled",
+      company:         i.company || i.company_name || i.companyName || "Unknown",
+      location:        Array.isArray(i.locations) ? i.locations.join(", ") : i.location || i.jobLocation || location,
+      isRemote:        String(i.workMode || i.is_remote || "").toLowerCase().includes("remote"),
+      applyUrl:        i.job_url || i.url || i.applyUrl || null,
+      datePosted:      i.postedDate || i.time_posted || i.date_posted || null,
+      experienceLevel: i.experience || i.seniority_level || null,
+      employmentType:  i.jobType || i.employment_type || job_type || null,
       skills:          Array.isArray(i.skills) ? i.skills : [],
       source:          "Naukri",
     }));
@@ -254,16 +254,16 @@ async function scrapeATS({ keywords, location, job_type, max }) {
     }
 
     return (items || []).map((i) => ({
-      title:           i.title || "Untitled",
-      company:         i.company?.name || i.company || "Unknown",
+      title:           i.title || i.jobTitle || i.job_title || "Untitled",
+      company:         i.company?.name || i.company || i.companyName || i.company_name || "Unknown",
       location:        i.locations?.[0]
                          ? [i.locations[0].city, i.locations[0].country].filter(Boolean).join(", ")
-                         : location,
+                         : i.location || location,
       isRemote:        i.locations?.[0]?.is_remote || i.is_remote || isRemotePref,
-      applyUrl:        i.apply_url || i.listing_url || null,
-      datePosted:      i.date_posted || null,
-      experienceLevel: i.experience_level || null,
-      employmentType:  i.employment_type || job_type || null,
+      applyUrl:        i.apply_url || i.listing_url || i.job_url || null,
+      datePosted:      i.date_posted || i.time_posted || i.posted_at || null,
+      experienceLevel: i.experience_level || i.seniority_level || null,
+      employmentType:  i.employment_type || i.contract_type || job_type || null,
       skills:          Array.isArray(i.skills) ? i.skills : [],
       source:          i.source || "ATS",
     }));
@@ -274,27 +274,52 @@ async function scrapeATS({ keywords, location, job_type, max }) {
 }
 
 async function scrapeInternshala({ keywords, location, max }) {
-  const slug    = encodeURIComponent(keywords.toLowerCase().replace(/\s+/g, "-"));
-  const locSlug = encodeURIComponent(location.toLowerCase().replace(/\s+/g, "-"));
-  const isRemote = /remote/i.test(location);
-  const startUrl = isRemote
-    ? `https://internshala.com/internships/${slug}-internship/`
-    : `https://internshala.com/internships/${slug}-internship-in-${locSlug}/`;
+  // Internshala uses specific slugs for categories (e.g. "software-development" not "developer")
+  const roleMap = {
+    "developer": "software-development",
+    "engineer":  "software-development",
+    "sde":       "software-development",
+    "full stack": "software-development",
+    "backend":    "software-development",
+    "frontend":   "software-development"
+  };
+  
+  let roleSlug = keywords.toLowerCase();
+  for (const [key, val] of Object.entries(roleMap)) {
+    if (roleSlug.includes(key)) {
+      roleSlug = val;
+      break;
+    }
+  }
+  const cleanSlug = roleSlug.replace(/\b(internship|intern|internships)\b/g, "").trim().replace(/\s+/g, "-");
+  const locSlug   = location.toLowerCase().replace(/\s+/g, "-");
+  
+  // Use the search URL format which is more robust than categorization slugs
+  const startUrl = `https://internshala.com/internships/keywords-${cleanSlug}/location-${locSlug}`;
 
   try {
-    const run = await client.actor("apify/web-scraper").call({
+    const run = await client.actor("apify/cheerio-scraper").call({
       startUrls: [{ url: startUrl }],
       pageFunction: `async function pageFunction(context) {
-        const { $ } = context;
+        const { $, request, log } = context;
         const jobs = [];
-        $(".individual_internship, .internship-item, [data-internship_id]").each((i, el) => {
+        $(".individual_internship, .internship-item").each((i, el) => {
           const $el = $(el);
-          const title   = $el.find(".profile h3, h3.heading_4_5, .profile .heading_4_5").first().text().trim();
+          const title = $el.find(".profile h3, h3.heading_4_5, .profile .heading_4_5").first().text().trim();
           const company = $el.find(".company_name a, .company_name").first().text().trim();
-          const location= $el.find(".location_link, .locations span").first().text().trim() || "Remote";
+          const location = $el.find(".location_link, .locations span").first().text().trim() || "Remote";
           const relPath = $el.find("a.view_detail_button, a[href*='/internship/detail/']").first().attr("href") || "";
-          const applyUrl= relPath.startsWith("http") ? relPath : "https://internshala.com" + relPath;
-          if (title) jobs.push({ title, company, location, applyUrl, isRemote: /remote/i.test(location) });
+          const applyUrl = relPath.startsWith("http") ? relPath : "https://internshala.com" + relPath;
+          if (title) {
+            jobs.push({ 
+              title, 
+              company, 
+              location, 
+              applyUrl,
+              isRemote: /remote/i.test(location),
+              source: "Internshala"
+            });
+          }
         });
         return jobs.slice(0, ${max});
       }`,

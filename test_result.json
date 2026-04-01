@@ -16,7 +16,7 @@
     "flow": "set_profile → find_jobs → get_job_details / track_application",
     "note": "find_jobs uses live Apify scraping (LinkedIn + Internshala). match_resume reads MongoDB."
   },
-  "session": "22387061-4710-49f2-97fd-cbb5e65b443b",
+  "session": "f5712123-f122-452b-b8c6-ce07309007b4",
   "tools": [
     "set_profile",
     "find_jobs",
@@ -26,7 +26,7 @@
   ],
   "find_jobs": {
     "status": 200,
-    "text": "Error in \"find_jobs\": Cannot read properties of null (reading 'toLowerCase')",
+    "text": "## No jobs found\n\nNo results from any source for **\"Software Engineer Intern\"** in **Noida** (posted: this week).\n\n**Try:**\n- Broadening keywords (e.g. \"React\" → \"Frontend Developer\")\n- Changing location to \"Remote\" or a larger city\n- Extending the posted_within window to \"this week\"",
     "error": null
   }
 }

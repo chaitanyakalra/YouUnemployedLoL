@@ -1,0 +1,96 @@
+[
+  {
+    "status": "fulfilled",
+    "value": []
+  },
+  {
+    "status": "fulfilled",
+    "value": [
+      {
+        "id": "7e39630e-7287-6d87-33df-0d8cb3ebaffb",
+        "title": "Senior Fullstack Developer",
+        "company": {
+          "id": "1c7d4142-e293-44d8-b1b3-b5d76a0ed6ba",
+          "name": "Developers"
+        },
+        "description": "<div><a rel=\"noopener noreferrer\" class=\"postings-link\" href=\"http://Developers.NET\">Developers.NET</a> is looking for a Senior Full Stack Developer with exceptional web and backend development skills to work as a member of an Agile team responsible for building and maintaining our client's web and/or mobile applications. Our environment will require you to work effectively with your teammates. But your success will be measured by how well you couple critical thinking, self-motivation, enthusiasm, and determination.</div>\n<div><a href=\"http://Developers.NET\" class=\"postings-link\" target=\"_blank\" rel=\"noopener noreferrer\">Developers.NET</a> is looking for a Senior Full Stack Developer with exceptional web and backend development skills to work as a member of an Agile team responsible for building and maintaining our client's web and/or mobile applications. Our environment will require you to work effectively with your teammates. But your success will be measured by how well you couple critical thinking, self-motivation, enthusiasm, and determination.</div>\n<h3>Responsibilities</h3><ul><li>Provide architectural leadership to the team and our client</li><li>Work with an agile team to build, maintain and optimize our client's applications</li><li>Mentor fellow developers</li><li>Work with DevOps and QA to build a quality-focused CI/CD pipeline</li><li>Proficient English and communications skills required</li><li>Good analytical thinking and problem-solving skills</li></ul>\n<h3>Technical Requirements</h3><ul><li>Bachelor's degree in Computer Science, Engineering, or equivalent experience</li><li>Five years of frontend experience</li><li>Five years of backend experience</li><li>Cross-browser/device responsive development experience</li><li>Experience with Agile and CI/CD best practices</li></ul>\n<h3>Benefits</h3><ul><li>Attractive competitive compensation</li><li>Automatic annual salary raise between 2.5% and 5%</li><li>Major Medical International Insurance</li><li>Constant Professional Development: Paid courses and training (national and US-based)</li><li>Paid Vacation Days</li><li>Paid Mexican holidays</li><li>100% remote work always &amp; forever! (work from anywhere you want)</li></ul>",
+        "listing_url": "https://jobs.lever.co/developers/b9a902bb-973d-4314-91b1-2cfa6b493392",
+        "apply_url": "https://jobs.lever.co/developers/b9a902bb-973d-4314-91b1-2cfa6b493392/apply",
+        "locations": [
+          {
+            "location": "MEXICO",
+            "city": null,
+            "state": null,
+            "country": "Mexico",
+            "latitude": 23.6585116,
+            "longitude": -102.0077097
+          }
+        ],
+        "compensation": null,
+        "employment_type": "contract",
+        "workplace_type": "remote",
+        "experience_level": null,
+        "source": "lever_co",
+        "source_id": "b9a902bb-973d-4314-91b1-2cfa6b493392",
+        "created_at": "2026-02-13T10:38:56.142Z",
+        "updated_at": "2026-02-15T18:20:19.1696727Z",
+        "date_posted": "2023-03-14T18:23:18.22Z",
+        "valid_through": null,
+        "is_remote": true
+      },
+      {
+        "id": "9f732e87-7dd0-b903-43ce-e9807d033fe6",
+        "title": "Data Engineer",
+        "company": {
+          "id": "1c7d4142-e293-44d8-b1b3-b5d76a0ed6ba",
+          "name": "Developers"
+        },
+        "description": "<div>We are looking for an experienced data engineer to join our team. You will use various methods to transform raw data into useful data systems. For example, you’ll create algorithms and conduct statistical analysis. Overall, you’ll strive for efficiency by aligning data systems with business goals.&nbsp;</div><div>To succeed in this data engineering position, you should have strong analytical skills and the ability to combine data from different sources. Data engineer skills also include familiarity with several programming languages and knowledge of learning machine methods.</div><div>If you are detail-oriented, with excellent organizational skills and experience in this field, we’d like to hear from you.&nbsp;</div>\n<div>We are looking for an experienced data engineer to join our team. You will use various methods to transform raw data into useful data systems. For example, you’ll create algorithms and conduct statistical analysis. Overall, you’ll strive for efficiency by aligning data systems with business goals.&nbsp;</div><div>To succeed in this data engineering position, you should have strong analytical skills and the ability to combine data from different sources. Data engineer skills also include familiarity with several programming languages and knowledge of learning machine methods.</div><div>If you are detail-oriented, with excellent organizational skills and experience in this field, we’d like to hear from you.&nbsp;</div>\n<h3>Responsibilities</h3><ul><li>Analyze and organize raw data&nbsp;</li><li>Build data systems and pipelines</li><li>Evaluate business needs and objectives</li><li>Interpret trends and patterns</li><li>Conduct complex data analysis and report on results&nbsp;</li><li>Prepare data for prescriptive and predictive modeling</li><li>Build algorithms and prototypes</li><li>Combine raw information from different sources</li><li>Explore ways to enhance data quality and reliability</li><li>Identify opportunities for data acquisition</li><li>Develop analytical tools and programs.</li><li>Collaborate with data scientists and architects on several projects.</li></ul>\n<h3>Requirements and skills</h3><ul><li>Previous experience as a data engineer or in a similar role</li><li>Technical expertise in data models, data mining, and segmentation techniques</li><li>Knowledge of programming languages&nbsp; (e.g., Java and Python)</li><li>Hands-on experience with SQL database design</li><li>Excellent numerical and analytical skills</li><li>Degree in Computer Science, IT, or a similar field.</li><li>Data Engineer certification.</li></ul>\n<h3>Benefits</h3><ul><li>Attractive competitive compensation</li><li>Automatic annual salary raise between 2.5% and 5%</li><li>Major Medical International Insurance</li><li>Constant Professional Development: Paid courses and training (national and US-based)</li><li>Paid Vacation Days</li><li>Paid Mexican holidays</li><li>100% remote work always &amp; forever! (work from anywhere you want)</li></ul>",
+        "listing_url": "https://jobs.lever.co/developers/03a15648-82cb-470b-baa1-119cbd258e1d",
+        "apply_url": "https://jobs.lever.co/developers/03a15648-82cb-470b-baa1-119cbd258e1d/apply",
+        "locations": [
+          {
+            "location": "MEXICO",
+            "city": null,
+            "state": null,
+            "country": "Mexico",
+            "latitude": 23.6585116,
+            "longitude": -102.0077097
+          }
+        ],
+        "compensation": null,
+        "employment_type": "contract",
+        "workplace_type": "remote",
+        "experience_level": null,
+        "source": "lever_co",
+        "source_id": "03a15648-82cb-470b-baa1-119cbd258e1d",
+        "created_at": "2026-02-13T10:38:56.142Z",
+        "updated_at": "2026-02-15T18:20:19.253952Z",
+        "date_posted": "2023-03-14T19:29:22.381Z",
+        "valid_through": null,
+        "is_remote": true
+      }
+    ]
+  },
+  {
+    "status": "fulfilled",
+    "value": [
+      {
+        "#error": true,
+        "#debug": {
+          "requestId": "GAQJFRnk0Zw1GTg",
+          "url": "https://internshala.com/internships/web-internship-in-noida/",
+          "loadedUrl": "https://internshala.com/internships/web-internship-in-noida/",
+          "method": "GET",
+          "retryCount": 3,
+          "errorMessages": [
+            "TypeError: $ is not a function\n    at Object.pageFunction (<anonymous>:5:9)\n    at pptr:evaluate;CrawlerSetup._requestHandler%20(file%3A%2F%2F%2Fhome%2Fmyuser%2Fdist%2Finternals%2Fcrawler_setup.js%3A499%3A35):7:43",
+            "TypeError: $ is not a function\n    at Object.pageFunction (<anonymous>:5:9)\n    at pptr:evaluate;CrawlerSetup._requestHandler%20(file%3A%2F%2F%2Fhome%2Fmyuser%2Fdist%2Finternals%2Fcrawler_setup.js%3A499%3A35):7:43",
+            "TypeError: $ is not a function\n    at Object.pageFunction (<anonymous>:5:9)\n    at pptr:evaluate;CrawlerSetup._requestHandler%20(file%3A%2F%2F%2Fhome%2Fmyuser%2Fdist%2Finternals%2Fcrawler_setup.js%3A499%3A35):7:43",
+            "TypeError: $ is not a function\n    at Object.pageFunction (<anonymous>:5:9)\n    at pptr:evaluate;CrawlerSetup._requestHandler%20(file%3A%2F%2F%2Fhome%2Fmyuser%2Fdist%2Finternals%2Fcrawler_setup.js%3A499%3A35):7:43"
+          ]
+        }
+      }
+    ]
+  }
+]
