@@ -16,17 +16,45 @@
     "flow": "set_profile → find_jobs → get_job_details / track_application",
     "note": "find_jobs uses live Apify scraping (LinkedIn + Internshala). match_resume reads MongoDB."
   },
-  "session": "f5712123-f122-452b-b8c6-ce07309007b4",
-  "tools": [
-    "set_profile",
-    "find_jobs",
-    "get_job_details",
-    "track_application",
-    "match_resume"
-  ],
+  "tools_list": [],
+  "set_profile": {
+    "jsonrpc": "2.0",
+    "error": {
+      "code": -32000,
+      "message": "Not Acceptable: Client must accept both application/json and text/event-stream"
+    },
+    "id": null
+  },
+  "get_profile": {
+    "jsonrpc": "2.0",
+    "error": {
+      "code": -32000,
+      "message": "Not Acceptable: Client must accept both application/json and text/event-stream"
+    },
+    "id": null
+  },
   "find_jobs": {
-    "status": 200,
-    "text": "## No jobs found\n\nNo results from any source for **\"Software Engineer Intern\"** in **Noida** (posted: this week).\n\n**Try:**\n- Broadening keywords (e.g. \"React\" → \"Frontend Developer\")\n- Changing location to \"Remote\" or a larger city\n- Extending the posted_within window to \"this week\"",
-    "error": null
+    "jsonrpc": "2.0",
+    "error": {
+      "code": -32000,
+      "message": "Not Acceptable: Client must accept both application/json and text/event-stream"
+    },
+    "id": null
+  },
+  "track_app": {
+    "jsonrpc": "2.0",
+    "error": {
+      "code": -32000,
+      "message": "Not Acceptable: Client must accept both application/json and text/event-stream"
+    },
+    "id": null
+  },
+  "get_apps": {
+    "jsonrpc": "2.0",
+    "error": {
+      "code": -32000,
+      "message": "Not Acceptable: Client must accept both application/json and text/event-stream"
+    },
+    "id": null
   }
 }
