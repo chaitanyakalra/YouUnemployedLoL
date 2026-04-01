@@ -51,8 +51,9 @@ export const findJobsTool = {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function normalizeLevel(s = "") {
-  s = s.toLowerCase();
+function normalizeLevel(s) {
+  if (!s) return "";
+  s = String(s).toLowerCase();
   if (s.includes("entry") || s.includes("junior") || s.includes("fresher") ||
       s.includes("intern") || s.includes("0-1") || s.includes("0 to 1") || s.includes("trainee")) return "entry";
   if (s.includes("mid") || s.includes("1-3") || s.includes("2-4") || s.includes("associate")) return "mid";
@@ -96,7 +97,7 @@ function computeFitScore(
   // +3 — Title keyword match
   if (userRole) {
     const roleWords = userRole.toLowerCase().split(/\s+/).filter((w) => w.length > 2);
-    const titleLow  = jobTitle.toLowerCase();
+    const titleLow  = (jobTitle || "Untitled").toLowerCase();
     if (roleWords.some((w) => titleLow.includes(w))) score += 3;
   }
 
@@ -110,8 +111,8 @@ function computeFitScore(
 
   // +1 — Employment type match
   if (userEmploymentType && jobEmploymentType) {
-    const u = userEmploymentType.toLowerCase().replace(/[-_\s]/g, "");
-    const j = jobEmploymentType.toLowerCase().replace(/[-_\s]/g, "");
+    const u = String(userEmploymentType).toLowerCase().replace(/[-_\s]/g, "");
+    const j = String(jobEmploymentType).toLowerCase().replace(/[-_\s]/g, "");
     if (u === j || j.includes(u) || u.includes(j)) score += 1;
   }
 
@@ -122,7 +123,7 @@ function computeFitScore(
     if (isRemotePref && jobIsRemote) {
       score += 2;
     } else if (!isRemotePref && jobLocation) {
-      const jobLocLow = jobLocation.toLowerCase();
+      const jobLocLow = String(jobLocation).toLowerCase();
       if (jobLocLow.includes(locLow) || locLow.split(/[\s,]+/).some((w) => w.length > 2 && jobLocLow.includes(w))) {
         score += 2;
       }
