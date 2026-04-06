@@ -1,8 +1,6 @@
 import crypto from "crypto";
-import { ApifyClient } from "apify-client";
 import { Job } from "../db/schemas.js";
-
-const client = new ApifyClient({ token: process.env.APIFY_API_KEY });
+import { callApifyActor } from "../utils/apify_utils.js";
 
 // Normalize a job from jobo.world/ats-jobs-search into our schema
 function normalizeAtsJob(raw) {
@@ -42,14 +40,17 @@ export async function runAtsWorker(queries = ["software engineer", "product mana
   console.error(`[ATS Worker] Starting — queries: ${queries.join(", ")}`);
 
   try {
-    const run = await client.actor("jobo.world/ats-jobs-search").call({
+    const { items, error } = await callApifyActor("jobo.world/ats-jobs-search", {
       queries,
       is_remote: false,  // fetch all, we'll store remote flag per job
       page_size: 100,
-      // sources: all 13 by default
-    });
+    }, { waitSecs: 120 });
 
-    const { items } = await client.dataset(run.defaultDatasetId).listItems();
+    if (error) {
+       console.error(`[ATS Worker] Actor error: ${error}`);
+       throw new Error(error);
+    }
+
     console.error(`[ATS Worker] Got ${items.length} jobs from 13 ATS platforms`);
 
     let upserted = 0;

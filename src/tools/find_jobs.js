@@ -5,12 +5,10 @@
 //          ATS x13    (jobo.world/ats-jobs-search)
 // Returns STEP 4 table: scored jobs ≥6, skip list, seniority flags.
 
-import { ApifyClient } from "apify-client";
 import { extractStr } from "../utils/extractStr.js";
 import { Job, JobSearch } from "../db/schemas.js";
 import crypto from "crypto";
-
-const client = new ApifyClient({ token: process.env.APIFY_API_KEY });
+import { callApifyActor } from "../utils/apify_utils.js";
 
 // ─── Timeout wrapper ──────────────────────────────────────────────────────────
 function withTimeout(promise, ms = 60_000, label = "scraper") {
@@ -197,19 +195,18 @@ async function scrapeLinkedIn({ keywords, location, job_type, posted_within, max
   );
 
   console.error(`[LinkedIn] URLs (${urls.length}):`, urls[0]);
-
+  
   try {
-    const run = await client.actor("curious_coder/linkedin-jobs-scraper").call(
-      { urls, count: max, scrapeCompany: false, timeout: 60, memory: 1024 },
-      { waitSecs: 90 }
-    );
-    const { items } = await client.dataset(run.defaultDatasetId).listItems();
+    const { items, error } = await callApifyActor("curious_coder/linkedin-jobs-scraper", {
+      urls,
+      count: max,
+      scrapeCompany: false,
+    }, { waitSecs: 90 });
+
+    if (error) throw new Error(error);
 
     if (items?.length) {
       console.error("[LinkedIn] raw item keys:", Object.keys(items[0]));
-      if (!extractStr(items[0], "title", "jobTitle", "positionName", "name")) {
-        console.error("[LinkedIn] ⚠️ title empty — raw[0]:", JSON.stringify(items[0], null, 2));
-      }
     } else {
       console.error("[LinkedIn] ⚠️ 0 items returned");
     }
@@ -238,15 +235,13 @@ async function scrapeNaukri({ keywords, location, job_type, max }) {
   //      bebity/naukri-jobs-scraper → verified working actor for Naukri India
   const primaryLoc = location.split(",")[0].trim();
   try {
-    const run = await client.actor("bebity/naukri-jobs-scraper").call(
-      {
-        keyword:  keywords.split(",")[0].trim(), // take first keyword only
-        location: primaryLoc,
-        maxItems: max,
-      },
-      { waitSecs: 90 }
-    );
-    const { items } = await client.dataset(run.defaultDatasetId).listItems();
+    const { items, error } = await callApifyActor("bebity/naukri-jobs-scraper", {
+      keyword:  keywords.split(",")[0].trim(),
+      location: primaryLoc,
+      maxItems: max,
+    }, { waitSecs: 90 });
+
+    if (error) throw new Error(error);
 
     if (items?.length) {
       console.error("[Naukri] raw item keys:", Object.keys(items[0]));
@@ -280,18 +275,16 @@ async function scrapeATS({ keywords, location, job_type, max }) {
   // so we at least get remote-eligible roles that Chaitanya can apply to.
   // ATS platforms don't index Indian companies well — this is a data source limitation.
   const isRemotePref = /remote/i.test(location);
-  const queryKeyword = keywords.split(",")[0].trim(); // single clean keyword works best
+  const queryKeyword = keywords.split(",")[0].trim();
 
   try {
-    const run = await client.actor("jobo.world/ats-jobs-search").call(
-      {
-        queries:   [queryKeyword],
-        is_remote: true, // always fetch remote ATS jobs — they're globally applicable
-        page_size: max,
-      },
-      { waitSecs: 90 }
-    );
-    const { items } = await client.dataset(run.defaultDatasetId).listItems();
+    const { items, error } = await callApifyActor("jobo.world/ats-jobs-search", {
+      queries:   [queryKeyword],
+      is_remote: true,
+      page_size: max,
+    }, { waitSecs: 90 });
+
+    if (error) throw new Error(error);
 
     if (items?.length) {
       console.error("[ATS] raw item keys:", Object.keys(items[0]));
@@ -365,8 +358,9 @@ async function scrapeInternshala({ keywords, location, max }) {
   console.error(`[Internshala] URL: ${startUrl}`);
 
   try {
-    const run = await client.actor("apify/cheerio-scraper").call({
+    const { items, error } = await callApifyActor("apify/cheerio-scraper", {
       startUrls: [{ url: startUrl }],
+      maxRequestsPerCrawl: 1,
       pageFunction: `async function pageFunction(context) {
         const { $, log } = context;
         const jobs = [];

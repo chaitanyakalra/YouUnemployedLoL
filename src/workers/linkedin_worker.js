@@ -1,9 +1,7 @@
 import crypto from "crypto";
-import { ApifyClient } from "apify-client";
 import { Job } from "../db/schemas.js";
 import { extractStr } from "../utils/extractStr.js";
-
-const client = new ApifyClient({ token: process.env.APIFY_API_KEY });
+import { callApifyActor } from "../utils/apify_utils.js";
 
 // ─── curious_coder/linkedin-jobs-scraper output shape ─────────────────────────
 // Confirmed field names from actor docs (2024-2025):
@@ -53,20 +51,22 @@ function normalizeLinkedInJob(raw) {
 export async function runLinkedInWorker(keywords = ["software engineer"]) {
   console.error(`[LinkedIn Worker] Starting — keywords: ${keywords.join(", ")}`);
   try {
-    // Build LinkedIn search URLs for each keyword
-    const urls = keywords.map(kw => ({
-      url: `https://www.linkedin.com/jobs/search/?keywords=${encodeURIComponent(kw)}&f_TPR=r604800`
-    }));
+    // Build LinkedIn search URLs for each keyword (plain string array as expected by actor)
+    const urls = keywords.map(kw => 
+      `https://www.linkedin.com/jobs/search/?keywords=${encodeURIComponent(kw)}&f_TPR=r604800`
+    );
 
-    const run = await client.actor("curious_coder/linkedin-jobs-scraper").call({
+    const { items, error } = await callApifyActor("curious_coder/linkedin-jobs-scraper", {
       urls,
       count: 50,
       scrapeCompany: false,
-      timeout: 120,
-      memory: 1024,
-    });
+    }, { waitSecs: 120 });
 
-    const { items } = await client.dataset(run.defaultDatasetId).listItems();
+    if (error) {
+      console.error(`[LinkedIn Worker] Actor error: ${error}`);
+      return { upserted: 0, error };
+    }
+
     console.error(`[LinkedIn Worker] Got ${items.length} jobs`);
 
     if (items?.length) {

@@ -84,7 +84,21 @@ const jobSearchSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+// ─── Session Schema (Persistence across restarts) ──────────────────────────────
+const sessionSchema = new mongoose.Schema(
+  {
+    sessionId: { type: String, required: true, unique: true },
+    lastActive: { type: Date, default: Date.now },
+    // We don't store the transport (binary/circular), just the metadata
+    metadata: { type: Object, default: {} }, 
+  },
+  { timestamps: true }
+);
+
+sessionSchema.index({ lastActive: 1 }, { expireAfterSeconds: 86400 }); // 24h cleanup
+
 // ─── Models ───────────────────────────────────────────────────────────────────
 export const Job         = mongoose.models.Job         || mongoose.model("Job", jobSchema);
 export const Application = mongoose.models.Application || mongoose.model("Application", applicationSchema);
 export const JobSearch   = mongoose.models.JobSearch   || mongoose.model("JobSearch", jobSearchSchema);
+export const Session     = mongoose.models.Session     || mongoose.model("Session", sessionSchema);

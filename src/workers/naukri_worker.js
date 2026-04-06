@@ -1,33 +1,34 @@
 import crypto from "crypto";
-import { ApifyClient } from "apify-client";
 import { Job } from "../db/schemas.js";
-
-const client = new ApifyClient({ token: process.env.APIFY_API_KEY });
+import { extractStr } from "../utils/extractStr.js";
+import { callApifyActor } from "../utils/apify_utils.js";
 
 function normalizeNaukriJob(raw) {
-  const title = raw.title || raw.jobTitle || "Untitled";
-  const company = raw.company || raw.companyName || "Unknown";
+  const title    = extractStr(raw, "title", "job_title", "jobTitle", "designation") || "Untitled";
+  const company  = extractStr(raw, "company", "company_name", "companyName", "companyId") || "Unknown";
+  const location = Array.isArray(raw.locations) ? raw.locations.join(", ") : extractStr(raw, "location", "city", "jobLocation") || "India";
+
   return {
-    externalId:      raw.jobId || raw.url || crypto.createHash("md5").update(`${title}:${company}`).digest("hex"),
+    externalId:      raw.jobId || raw.job_id || raw.url || crypto.createHash("md5").update(`${title}:${company}:${location}`).digest("hex"),
     source:          "naukri",
-    title:           raw.title || raw.jobTitle || "Untitled",
-    company:         raw.company || raw.companyName || "Unknown",
+    title,
+    company,
     companyLogo:     raw.companyLogo || null,
     companyWebsite:  null,
-    location:        Array.isArray(raw.locations) ? raw.locations.join(", ") : raw.location || null,
+    location,
     city:            null,
     country:         "India",
-    isRemote:        (raw.workMode || "").toLowerCase().includes("remote"),
+    isRemote:        /remote/i.test(String(raw.workMode || raw.workplace_type || raw.is_remote || "")),
     salaryMin:       raw.salaryMin || null,
     salaryMax:       raw.salaryMax || null,
     salaryCurrency:  "INR",
     salaryPeriod:    "yearly",
-    employmentType:  raw.jobType || null,
-    experienceLevel: raw.experience || null,
+    employmentType:  raw.jobType || raw.employment_type || null,
+    experienceLevel: raw.experience || raw.seniority_level || null,
     department:      raw.department || null,
     description:     raw.description || raw.jobDescription || null,
-    skills:          Array.isArray(raw.skills) ? raw.skills : [],
-    listingUrl:      raw.url || raw.jobUrl || null,
+    skills:          Array.isArray(raw.skills) ? raw.skills : Array.isArray(raw.keySkills) ? raw.keySkills : [],
+    listingUrl:      raw.url || raw.jobUrl || raw.job_url || null,
     applyUrl:        raw.applyUrl || raw.url || null,
     datePosted:      raw.postedDate ? new Date(raw.postedDate) : null,
     isActive:        true,
@@ -38,13 +39,18 @@ export async function runNaukriWorker(keywords = ["software developer", "data en
   console.error(`[Naukri Worker] Starting — keywords: ${keywords.join(", ")}`);
 
   try {
-    const run = await client.actor("stealth_mode/naukri-jobs-search-scraper").call({
-      keywords,
-      location: "",
-      maxResults: 100,
-    });
+    // Broad background search for Naukri (since it is the best India-specific direct source)
+    const { items, error } = await callApifyActor("bebity/naukri-jobs-scraper", {
+      keyword:  keywords.join(" "), 
+      location: "India",
+      maxItems: 100,
+    }, { waitSecs: 90 });
 
-    const { items } = await client.dataset(run.defaultDatasetId).listItems();
+    if (error) {
+       console.error(`[Naukri Worker] Actor error: ${error}`);
+       return { upserted: 0, error };
+    }
+
     console.error(`[Naukri Worker] Got ${items.length} jobs`);
 
     let upserted = 0;

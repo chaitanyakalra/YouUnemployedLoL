@@ -9,6 +9,8 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 
 import { connectDB } from "./db/connect.js";
+import { Session } from "./db/schemas.js";
+import crypto from "crypto";
 
 // ── Tools ─────────────────────────────────────────────────────────────────────
 import { setProfileTool,       setProfile       } from "./tools/set_profile.js";
@@ -71,20 +73,30 @@ const streamableSessions = new Map();
 // ── Helper: create a fresh transport and bind it to a given sessionId ─────────
 // Used both for new sessions AND for re-attaching stale sessions after restart.
 async function createSession(sessionId) {
+  // If no sessionId, generate a new one
+  const id = sessionId || crypto.randomUUID();
+  
+  // Try to find or create the session in DB first (Persistence)
+  await Session.findOneAndUpdate(
+    { sessionId: id },
+    { lastActive: new Date() },
+    { upsert: true, new: true }
+  );
+
   const transport = new StreamableHTTPServerTransport({
-    // If sessionId provided, reuse it so mcp-remote never sees a new ID
-    sessionIdGenerator: sessionId ? () => sessionId : () => crypto.randomUUID(),
-    onsessioninitialized: (id) => {
-      console.error(`[Session] ✓ ${id}`);
-      streamableSessions.set(id, transport);
+    sessionIdGenerator: () => id,
+    onsessioninitialized: (initializedId) => {
+      console.error(`[Session] ✓ ${initializedId} (initialized)`);
+      streamableSessions.set(initializedId, transport);
     },
   });
+
   transport.onclose = () => {
-    if (transport.sessionId) {
-      console.error(`[Session] ✗ closed ${transport.sessionId}`);
-      streamableSessions.delete(transport.sessionId);
-    }
+    console.error(`[Session] ✗ closed ${id}`);
+    streamableSessions.delete(id);
+    // Note: We don't delete from DB on close, only on 24h TTL or if explicitly terminated
   };
+
   const mcpServer = createMcpServer();
   await mcpServer.connect(transport);
   return transport;
@@ -121,19 +133,22 @@ app.post("/mcp", async (req, res) => {
   }
 
   // Case 3 — STALE SESSION (server restarted, mcp-remote still has old ID)
-  // Root fix: transparently re-create the session with the SAME sessionId
-  // mcp-remote never gets a 400, so it never hangs or gives up.
+  // Transparently re-create the session with the SAME sessionId
   if (sessionId) {
-    console.error(`[Session] ↺ Stale session ${sessionId} — auto-recovering`);
-    try {
-      transport = await createSession(sessionId);
-      // Re-handle the original request on the fresh transport
-      await transport.handleRequest(req, res, req.body);
-    } catch (err) {
-      console.error(`[Session] Recovery failed: ${err.message}`);
-      if (!res.headersSent) res.status(500).json({ jsonrpc: "2.0", error: { code: -32603, message: "Session recovery failed" }, id: null });
+    // Check DB to see if this was indeed a session we previously had
+    const knownSession = await Session.findOne({ sessionId });
+    if (knownSession) {
+      console.error(`[Session] ↺ Stale session ${sessionId} — auto-recovering from DB`);
+      try {
+        transport = await createSession(sessionId);
+        await transport.handleRequest(req, res, req.body);
+        return;
+      } catch (err) {
+        console.error(`[Session] Recovery failed: ${err.message}`);
+      }
+    } else {
+       console.error(`[Session] ⚠️ Unknown session ID: ${sessionId}. Client must re-initialize.`);
     }
-    return;
   }
 
   // Case 4 — no session ID at all and not an init request (malformed client)
