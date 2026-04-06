@@ -1,11 +1,14 @@
+import crypto from "crypto";
 import { ApifyClient } from "apify-client";
 import { Job } from "../db/schemas.js";
 
 const client = new ApifyClient({ token: process.env.APIFY_API_KEY });
 
 function normalizeNaukriJob(raw) {
+  const title = raw.title || raw.jobTitle || "Untitled";
+  const company = raw.company || raw.companyName || "Unknown";
   return {
-    externalId:      raw.jobId || raw.url || String(Math.random()),
+    externalId:      raw.jobId || raw.url || crypto.createHash("md5").update(`${title}:${company}`).digest("hex"),
     source:          "naukri",
     title:           raw.title || raw.jobTitle || "Untitled",
     company:         raw.company || raw.companyName || "Unknown",

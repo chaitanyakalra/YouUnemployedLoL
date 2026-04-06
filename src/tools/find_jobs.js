@@ -7,6 +7,8 @@
 
 import { ApifyClient } from "apify-client";
 import { extractStr } from "../utils/extractStr.js";
+import { Job, JobSearch } from "../db/schemas.js";
+import crypto from "crypto";
 
 const client = new ApifyClient({ token: process.env.APIFY_API_KEY });
 
@@ -154,6 +156,32 @@ function postedWithinToTPR(posted = "this week") {
 }
 
 // ─── Scrapers ─────────────────────────────────────────────────────────────────
+
+async function saveJobsToDB(jobs) {
+  const t0 = performance.now();
+  let upserted = 0;
+  for (const job of jobs) {
+    try {
+      // Create a deterministic externalId if missing
+      if (!job.externalId) {
+        job.externalId = crypto.createHash("md5")
+          .update(`${job.source}:${job.title}:${job.company}:${job.location}`)
+          .digest("hex");
+      }
+
+      const doc = await Job.findOneAndUpdate(
+        { source: job.source.toLowerCase(), externalId: job.externalId },
+        { $set: job },
+        { upsert: true, new: true }
+      );
+      job._id = doc._id; // Attach DB ID for tools
+      upserted++;
+    } catch (err) {
+      console.error(`[DB] Failed to save job: ${err.message}`);
+    }
+  }
+  console.error(`[DB] ✓ Saved ${upserted}/${jobs.length} jobs (${(performance.now() - t0).toFixed(0)}ms)`);
+}
 
 async function scrapeLinkedIn({ keywords, location, job_type, posted_within, max }) {
   const tpr = postedWithinToTPR(posted_within);
@@ -319,14 +347,20 @@ async function scrapeInternshala({ keywords, location, max }) {
     "genai":      "machine-learning",
   };
 
-  let roleSlug = keywords.split(",")[0].trim().toLowerCase();
-  for (const [key, val] of Object.entries(roleMap)) {
-    if (roleSlug.includes(key)) { roleSlug = val; break; }
+  const primaryKeyword = keywords.split(",")[0].trim().toLowerCase();
+  let roleSlug = roleMap[Object.keys(roleMap).find(k => primaryKeyword.includes(k))] || "software-development";
+  
+  const isRemote = /remote/i.test(location);
+  const city = location.split(",")[0].trim().toLowerCase().replace(/\s+/g, "-");
+
+  let startUrl = `https://internshala.com/internships/keywords-${primaryKeyword.replace(/\s+/g, "%20")}`;
+  
+  // Try to build a cleaner URL for better results
+  if (isRemote) {
+    startUrl = `https://internshala.com/internships/work-from-home-${roleSlug}-internships`;
+  } else if (city && city !== "india") {
+    startUrl = `https://internshala.com/internships/${roleSlug}-internship-in-${city}`;
   }
-  const cleanSlug = roleSlug.replace(/\b(internship|intern|internships)\b/g, "").trim().replace(/\s+/g, "-");
-  // Internshala location slugs: "delhi-ncr" not "delhi ncr"
-  const locSlug = location.split(",")[0].trim().toLowerCase().replace(/\s+/g, "-");
-  const startUrl = `https://internshala.com/internships/keywords-${cleanSlug}/location-${locSlug}`;
 
   console.error(`[Internshala] URL: ${startUrl}`);
 
@@ -336,31 +370,45 @@ async function scrapeInternshala({ keywords, location, max }) {
       pageFunction: `async function pageFunction(context) {
         const { $, log } = context;
         const jobs = [];
-        $(".individual_internship, .internship-item, [data-internship_id]").each((i, el) => {
+        const items = $(".individual_internship, .internship-item, [data-internship_id]");
+        items.each((i, el) => {
           const $el = $(el);
           const title   = $el.find(".profile h3, h3.heading_4_5, .profile .heading_4_5").first().text().trim();
           const company = $el.find(".company_name a, .company_name").first().text().trim();
           const location= $el.find(".location_link, .locations span, .location_name").first().text().trim() || "Remote";
           const relPath = $el.find("a.view_detail_button, a[href*='/internship/detail/']").first().attr("href") || "";
           const applyUrl= relPath.startsWith("http") ? relPath : "https://internshala.com" + relPath;
-          if (title) jobs.push({ title, company, location, applyUrl, isRemote: /remote/i.test(location), source: "Internshala" });
+          const extId   = $el.attr("data-internship_id") || relPath.split("/").pop();
+          if (title && company) {
+            jobs.push({ 
+              externalId: extId,
+              title, 
+              company, 
+              location, 
+              applyUrl, 
+              isRemote: /remote/i.test(location), 
+              source: "internshala" 
+            });
+          }
         });
         log.info("Internshala found " + jobs.length + " listings");
         return jobs.slice(0, ${max});
       }`,
       proxyConfiguration: { useApifyProxy: true },
-    }, { waitSecs: 60 });
+    }, { waitSecs: 90 });
 
     const { items } = await client.dataset(run.defaultDatasetId).listItems();
-    console.error(`[Internshala] raw items: ${items.length}`);
+    // Cheerio results are usually already flat
+    const flatItems = items.flat().filter(Boolean);
+    console.error(`[Internshala] ✅ Found ${flatItems.length} items`);
 
-    return items.flat().filter(Boolean).map((i) => ({
+    return flatItems.map((i) => ({
       ...i,
-      datePosted:      null,
+      datePosted:      new Date().toISOString(), // Internshala doesn't expose date easily, assume fresh
       experienceLevel: "internship",
       employmentType:  "internship",
       skills:          [],
-      source:          "Internshala",
+      source:          "internshala",
     }));
   } catch (err) {
     console.error("[Internshala] scrape error:", err.message);
@@ -394,25 +442,21 @@ function buildGateMessage(missing) {
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
-export async function findJobs(args) {
+// ─── Execution ────────────────────────────────────────────────────────────────
+
+async function performSearchInBackground(searchId, args) {
   const {
     keywords,
     location,
     job_type,
-    posted_within          = "this week",
+    posted_within = "this week",
     max_results_per_source = 25,
     user_role,
     user_experience_level,
     user_employment_type,
     user_skills,
-    _mock                  = false,
-  } = args || {};
-
-  const missing = [];
-  if (!keywords) missing.push("target role/keywords (e.g. 'React developer, Full Stack Developer')");
-  if (!location) missing.push("location (e.g. 'Noida', 'Delhi NCR', 'Remote')");
-  if (!job_type) missing.push("job type — 'full-time', 'internship', or 'both'");
-  if (missing.length) return buildGateMessage(missing);
+    _mock = false,
+  } = args;
 
   const max           = Math.min(max_results_per_source || 25, 50);
   const userSkillsArr = user_skills ? user_skills.split(",").map((s) => s.trim()).filter(Boolean) : [];
@@ -420,125 +464,167 @@ export async function findJobs(args) {
 
   let allJobs = [];
 
-  if (useMock) {
-    console.error("[find_jobs] Using mock data");
-    allJobs = getMockJobs(keywords, location);
-  } else {
-    const scrapers = [
-      withTimeout(scrapeLinkedIn({ keywords, location, job_type, posted_within, max }), 90_000, "LinkedIn"),
-      withTimeout(scrapeNaukri({ keywords, location, job_type, max }), 90_000, "Naukri"),
-    ];
+  try {
+    if (useMock) {
+      allJobs = getMockJobs(keywords, location);
+    } else {
+      const scrapers = [
+        withTimeout(scrapeLinkedIn({ keywords, location, job_type, posted_within, max }), 120_000, "LinkedIn"),
+        withTimeout(scrapeNaukri({ keywords, location, job_type, max }), 120_000, "Naukri"),
+      ];
 
-    if (job_type === "internship" || job_type === "both") {
-      scrapers.push(withTimeout(scrapeInternshala({ keywords, location, max }), 60_000, "Internshala"));
-    }
-    if (job_type === "full-time" || job_type === "both") {
-      scrapers.push(withTimeout(scrapeATS({ keywords, location, job_type, max }), 90_000, "ATS"));
-    }
+      if (job_type === "internship" || job_type === "both") {
+        scrapers.push(withTimeout(scrapeInternshala({ keywords, location, max }), 90_000, "Internshala"));
+      }
+      if (job_type === "full-time" || job_type === "both") {
+        scrapers.push(withTimeout(scrapeATS({ keywords, location, job_type, max }), 120_000, "ATS"));
+      }
 
-    const results = await Promise.allSettled(scrapers);
-    for (const r of results) {
-      if (r.status === "fulfilled" && Array.isArray(r.value)) {
-        allJobs.push(...r.value);
+      const results = await Promise.allSettled(scrapers);
+      for (const r of results) {
+        if (r.status === "fulfilled" && Array.isArray(r.value)) {
+          allJobs.push(...r.value);
+        }
       }
     }
-  }
 
-  if (!allJobs.length) {
-    return [
-      `## No jobs found`,
-      ``,
-      `No results from any source for **"${keywords}"** in **${location}** (posted: ${posted_within}).`,
-      ``,
-      `**Try:**`,
-      `- Simplify keywords to one role: "Full Stack Developer"`,
-      `- Change location to "Remote"`,
-      `- Extend the posted_within window to "this week"`,
-    ].join("\n");
-  }
+    // 1. Post-scrape date filter
+    const maxDays = posted_within.includes("today") ? 1 : posted_within.includes("2 day") ? 2 : 14; // default 2 weeks for "this week"
+    let filtered = allJobs.filter((j) => {
+      if (!j.datePosted) return true; // keep if unknown
+      const days = Math.floor((Date.now() - new Date(j.datePosted)) / 86_400_000);
+      return days <= maxDays;
+    });
 
-  const scored = allJobs.map((job) => {
-    const fitScore = computeFitScore(
-      {
-        jobTitle:          job.title,
-        jobExpLevel:       job.experienceLevel,
-        jobIsRemote:       job.isRemote,
-        jobLocation:       job.location,
-        jobSkills:         job.skills || [],
-        jobEmploymentType: job.employmentType,
-      },
-      {
-        userRole:           user_role            || keywords.split(",")[0].trim(),
-        userExpLevel:       user_experience_level || "",
-        userLocation:       location,
-        userEmploymentType: user_employment_type  || job_type,
-        userSkillsArr,
+    // 2. Post-scrape location filter (Strict for India)
+    const isIndiaReq = /india|noida|gurugram|delhi|bangalore|pune|mumbai|hyderabad/i.test(location);
+    if (isIndiaReq) {
+      filtered = filtered.filter(j => 
+        j.isRemote || 
+        /india|noida|gurugram|delhi|bangalore|pune|mumbai|hyderabad|chennai/i.test(j.location || "")
+      );
+    }
+
+    // 3. Save to DB (Upsert)
+    await saveJobsToDB(filtered);
+
+    // 4. Scoring & Seniority Check
+    const scored = filtered.map((job) => {
+      const fitScore = computeFitScore(
+        {
+          jobTitle:          job.title,
+          jobExpLevel:       job.experienceLevel,
+          jobIsRemote:       job.isRemote,
+          jobLocation:       job.location,
+          jobSkills:         job.skills || [],
+          jobEmploymentType: job.employmentType,
+        },
+        {
+          userRole:           user_role            || keywords.split(",")[0].trim(),
+          userExpLevel:       user_experience_level || "",
+          userLocation:       location,
+          userEmploymentType: user_employment_type  || job_type,
+          userSkillsArr,
+        }
+      );
+
+      const stretch  = isStretch(job.title, job.experienceLevel, user_experience_level || "");
+      const daysAgo  = job.datePosted ? Math.floor((Date.now() - new Date(job.datePosted)) / 86_400_000) : null;
+      const city     = (job.location || location).split(",")[0].trim();
+      const hmCell   = `${getHiringManagerTitle(job.title)} "${job.company}" "${city}"`;
+
+      return { ...job, fitScore, stretch, daysAgo, hmSearchString: hmCell };
+    });
+
+    // 5. Deduplicate (Company + Normalized Title)
+    const uniqueMap = new Map();
+    scored.forEach(j => {
+      const key = `${j.company.toLowerCase()}:${j.title.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
+      if (!uniqueMap.has(key) || uniqueMap.get(key).fitScore < j.fitScore) {
+        uniqueMap.set(key, j);
       }
-    );
+    });
+    const deduped = Array.from(uniqueMap.values());
 
-    const stretch  = isStretch(job.title, job.experienceLevel, user_experience_level || "");
-    const daysAgo  = job.datePosted ? Math.floor((Date.now() - new Date(job.datePosted)) / 86_400_000) : null;
-    const city     = (job.location || location).split(",")[0].trim();
-    const hmCell   = `${getHiringManagerTitle(job.title)} "${job.company}" "${city}"`;
+    deduped.sort((a, b) => (b.datePosted ? new Date(b.datePosted) : 0) - (a.datePosted ? new Date(a.datePosted) : 0) || b.fitScore - a.fitScore);
 
-    return { ...job, fitScore, stretch, daysAgo, hmSearchString: hmCell };
-  });
+    const showJobs = deduped.filter((j) => j.fitScore >= 6).slice(0, 40);
+    const skipJobs = deduped.filter((j) => j.fitScore < 6).slice(0, 10);
+    const sources  = [...new Set(allJobs.map(j => j.source))].join(", ");
 
-  scored.sort((a, b) => {
-    const aDate = a.datePosted ? new Date(a.datePosted).getTime() : 0;
-    const bDate = b.datePosted ? new Date(b.datePosted).getTime() : 0;
-    if (bDate !== aDate) return bDate - aDate;
-    return b.fitScore - a.fitScore;
-  });
-
-  const showJobs = scored.filter((j) => j.fitScore >= 6);
-  const skipJobs = scored.filter((j) => j.fitScore < 6);
-  const sources  = [...new Set(allJobs.map(j => j.source))].join(", ");
-
-  const lines = [
-    `## STEP 4 — Job Search Results`,
-    ``,
-    `**Search:** "${keywords}" | **Location:** ${location} | **Type:** ${job_type} | **Posted:** ${posted_within}`,
-    `**Sources scraped:** ${sources}`,
-    `**Total found:** ${allJobs.length} | **Showing:** ${showJobs.length} (fit ≥ 6/10) | **Skipping:** ${skipJobs.length}`,
-    useMock ? `\n> ⚠️ **MOCK MODE** — test data only.\n` : ``,
-    `> Score is server-computed. Adjust ±1 based on full JD nuance.`,
-    ``,
-  ];
-
-  if (showJobs.length) {
-    lines.push(
-      "| Role | Company | Source | Posted | Fit | Apply | Hiring Manager Search |",
-      "|------|---------|--------|--------|-----|-------|-----------------------|",
+    const lines = [
+      `## STEP 4 — Job Search Results`,
+      ``,
+      `**Search:** "${keywords}" | **Location:** ${location} | **Type:** ${job_type} | **Posted:** ${posted_within}`,
+      `**Sources scraped:** ${sources}`,
+      `**Total found:** ${allJobs.length} | **Filtered:** ${filtered.length} | **Showing:** ${showJobs.length}`,
+      useMock ? `\n> ⚠️ **MOCK MODE** — test data only.\n` : ``,
+      `> IDs refer to internal database records. Use \`get_job_details(job_id)\` to see more.`,
+      ``,
+      "| Role | Company | Source | Posted | Fit | Apply | ID |",
+      "|------|---------|--------|--------|-----|-------|----|",
       ...showJobs.map((j) => {
         const role    = `${j.stretch ? "⚠️ " : ""}${j.title}`;
         const posted  = j.daysAgo !== null ? `${j.daysAgo}d ago` : "—";
         const apply   = j.applyUrl ? `[Apply](${j.applyUrl})` : "—";
-        return `| ${role} | ${j.company} | ${j.source} | ${posted} | ${j.fitScore}/10 | ${apply} | \`${j.hmSearchString}\` |`;
+        return `| ${role} | ${j.company} | ${j.source} | ${posted} | ${j.fitScore}/10 | ${apply} | \`${j._id}\` |`;
       }),
       ""
+    ];
+
+    if (skipJobs.length) {
+      lines.push(`### Skipping ${skipJobs.length} low-fit roles:`, ...skipJobs.map(j => `- **${j.title}** at ${j.company} (${j.source})`));
+    }
+
+    await JobSearch.findOneAndUpdate(
+      { searchId },
+      { status: "completed", results: lines.join("\n"), jobCount: showJobs.length },
+      { upsert: true }
     );
-  } else {
-    lines.push(`_No jobs met the ≥ 6/10 fit threshold._`, ``);
-  }
 
-  if (skipJobs.length) {
-    lines.push(
-      `## Jobs to Skip`,
-      ``,
-      ...skipJobs.map((j) => {
-        let reason = `Fit score ${j.fitScore}/10`;
-        if (j.stretch) reason += " — seniority stretch";
-        else if (j.fitScore <= 3) reason += " — role/location mismatch";
-        return `- **${j.title}** at ${j.company} (${j.source}) — ${reason}`;
-      }),
-      ``
+  } catch (err) {
+    console.error(`[Background Search] Failed: ${err.message}`);
+    await JobSearch.findOneAndUpdate(
+      { searchId },
+      { status: "failed", error: err.message },
+      { upsert: true }
     );
   }
+}
 
-  if (showJobs.some((j) => j.stretch)) {
-    lines.push(`> ⚠️ = Seniority stretch. Apply if you meet 70%+ of requirements.`);
-  }
+export async function findJobs(args) {
+  const { keywords, location, job_type } = args || {};
 
-  return lines.join("\n");
+  const missing = [];
+  if (!keywords) missing.push("keywords");
+  if (!location) missing.push("location");
+  if (!job_type) missing.push("job_type");
+  if (missing.length) return `Missing required parameters: ${missing.join(", ")}`;
+
+  const searchId = crypto.randomUUID();
+  const expiresAt = new Date(Date.now() + 3600_000); // 1 hour
+
+  await JobSearch.create({
+    searchId,
+    query: args,
+    status: "pending",
+    expiresAt,
+  });
+
+  // Kick off background task
+  setImmediate(() => performSearchInBackground(searchId, args));
+
+  return [
+    `## 🚀 Job Search Started`,
+    ``,
+    `I'm scraping **LinkedIn, Internshala, Naukri, and 13 ATS platforms** for "${keywords}" in "${location}".`,
+    ``,
+    `**This takes 30-90 seconds.** Because this is a live search, I've backgrounded the task to avoid timeouts.`,
+    ``,
+    `### How to get results:`,
+    `Please wait about **60 seconds**, then call:`,
+    `\`get_job_status(search_id: "${searchId}")\``,
+    ``,
+    `> **Search ID:** \`${searchId}\``
+  ].join("\n");
 }

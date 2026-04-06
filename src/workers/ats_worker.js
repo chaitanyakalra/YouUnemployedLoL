@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import { ApifyClient } from "apify-client";
 import { Job } from "../db/schemas.js";
 
@@ -5,8 +6,10 @@ const client = new ApifyClient({ token: process.env.APIFY_API_KEY });
 
 // Normalize a job from jobo.world/ats-jobs-search into our schema
 function normalizeAtsJob(raw) {
+  const title = raw.title || "Untitled";
+  const company = raw.company?.name || raw.company || "Unknown";
   return {
-    externalId:      raw.id || raw.listing_url || String(Math.random()),
+    externalId:      raw.id || raw.listing_url || crypto.createHash("md5").update(`${title}:${company}`).digest("hex"),
     source:          raw.source || "ats",
     title:           raw.title || "Untitled",
     company:         raw.company?.name || raw.company || "Unknown",

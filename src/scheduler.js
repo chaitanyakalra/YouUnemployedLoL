@@ -49,11 +49,11 @@ async function runAllWorkers() {
 }
 
 // Run immediately on startup, then every 6 hours
-async function start() {
+export async function start() {
   console.error("🚀 [Scheduler] Starting job scraper scheduler");
 
-  // First run immediately
-  await runAllWorkers();
+  // First run immediately (non-blocking)
+  runAllWorkers().catch(err => console.error("[Scheduler] Initial run failed:", err));
 
   // Then every 6 hours: "0 */6 * * *"
   cron.schedule("0 */6 * * *", async () => {
@@ -63,7 +63,11 @@ async function start() {
   console.error("📅 [Scheduler] Scheduled to run every 6 hours");
 }
 
-start().catch((err) => {
-  console.error("Fatal scheduler error:", err);
-  process.exit(1);
-});
+// Only auto-start if run directly (e.g. node src/scheduler.js)
+import { fileURLToPath } from "url";
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  start().catch((err) => {
+    console.error("Fatal scheduler error:", err);
+    process.exit(1);
+  });
+}

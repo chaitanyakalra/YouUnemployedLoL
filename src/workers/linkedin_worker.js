@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import { ApifyClient } from "apify-client";
 import { Job } from "../db/schemas.js";
 import { extractStr } from "../utils/extractStr.js";
@@ -20,7 +21,8 @@ function normalizeLinkedInJob(raw) {
   }
 
   return {
-    externalId:      raw.id || raw.job_id || raw.url || raw.jobUrl || raw.job_url || String(Math.random()),
+    externalId:      raw.id || raw.job_id || raw.url || raw.jobUrl || raw.job_url 
+                     || crypto.createHash("md5").update(`${title}:${company}:${location}`).digest("hex"),
     source:          "linkedin",
     title,
     company,

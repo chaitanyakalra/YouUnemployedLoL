@@ -70,6 +70,21 @@ const applicationSchema = new mongoose.Schema(
 applicationSchema.index({ userId: 1, status: 1 });
 applicationSchema.index({ userId: 1, jobId: 1 }, { unique: true });
 
+// ─── Job Search Schema (Async Polling) ────────────────────────────────────────
+const jobSearchSchema = new mongoose.Schema(
+  {
+    searchId:   { type: String, required: true, unique: true },
+    status:     { type: String, enum: ["pending", "completed", "failed"], default: "pending" },
+    query:      { type: Object }, // Store original request params
+    results:    { type: String }, // Final Markdown table
+    jobCount:   { type: Number, default: 0 },
+    error:      { type: String },
+    expiresAt:  { type: Date, required: true, index: { expires: 0 } }, // Auto-delete
+  },
+  { timestamps: true }
+);
+
 // ─── Models ───────────────────────────────────────────────────────────────────
 export const Job         = mongoose.models.Job         || mongoose.model("Job", jobSchema);
 export const Application = mongoose.models.Application || mongoose.model("Application", applicationSchema);
+export const JobSearch   = mongoose.models.JobSearch   || mongoose.model("JobSearch", jobSearchSchema);

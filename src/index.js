@@ -13,13 +13,16 @@ import { connectDB } from "./db/connect.js";
 // ── Tools ─────────────────────────────────────────────────────────────────────
 import { setProfileTool,       setProfile       } from "./tools/set_profile.js";
 import { findJobsTool,         findJobs         } from "./tools/find_jobs.js";
+import { getStatusTool,       getStatus       } from "./tools/get_job_status.js";
 import { getJobDetailsTool,    getJobDetails    } from "./tools/get_job_details.js";
 import { trackApplicationTool, trackApplication } from "./tools/track_application.js";
 import { matchResumeTool,      matchResume      } from "./tools/match_resume.js";
+import { start as startScheduler } from "./scheduler.js";
 
 const TOOLS = [
   { def: setProfileTool,       fn: setProfile       },
   { def: findJobsTool,         fn: findJobs         },
+  { def: getStatusTool,       fn: getStatus       },
   { def: getJobDetailsTool,    fn: getJobDetails    },
   { def: trackApplicationTool, fn: trackApplication },
   { def: matchResumeTool,      fn: matchResume      },
@@ -176,9 +179,10 @@ app.get("/health", (_req, res) => res.json({
 }));
 
 // ── Start ─────────────────────────────────────────────────────────────────────
-const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
-  console.error(`🚀 YouUnemployedLol v2.2 on :${PORT}`);
+  console.error(`🚀 YouUnemployedLol v2.3 on :${PORT}`);
   console.error(`   Tools: ${TOOL_NAMES.join(", ")}`);
-  console.error(`   Session recovery: ON — stale sessions auto-recreated after restart`);
+  
+  // Start background worker scheduler
+  startScheduler().catch(err => console.error("⚠️ [Scheduler] Failed to start:", err.message));
 });
