@@ -179,6 +179,7 @@ app.get("/health", (_req, res) => res.json({
 }));
 
 // ── Start ─────────────────────────────────────────────────────────────────────
+const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.error(`🚀 YouUnemployedLol v2.3 on :${PORT}`);
   console.error(`   Tools: ${TOOL_NAMES.join(", ")}`);
