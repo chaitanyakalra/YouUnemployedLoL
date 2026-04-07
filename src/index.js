@@ -91,10 +91,18 @@ async function createSession(sessionId) {
     },
   });
 
-  transport.onclose = () => {
+  transport.onclose = async () => {
     console.error(`[Session] ✗ closed ${id}`);
     streamableSessions.delete(id);
-    // Note: We don't delete from DB on close, only on 24h TTL or if explicitly terminated
+    // Update lastActive so TTL cleanup can work properly
+    try {
+      await Session.findOneAndUpdate(
+        { sessionId: id },
+        { lastActive: new Date() }
+      );
+    } catch (err) {
+      console.error(`[Session] Failed to update lastActive on close: ${err.message}`);
+    }
   };
 
   const mcpServer = createMcpServer();
@@ -123,6 +131,12 @@ app.post("/mcp", async (req, res) => {
   // Case 2 — known session, happy path
   let transport = streamableSessions.get(sessionId);
   if (transport) {
+    // Update session activity in DB (fire-and-forget)
+    Session.findOneAndUpdate(
+      { sessionId },
+      { lastActive: new Date() }
+    ).catch(err => console.error(`[Session] Failed to update lastActive: ${err.message}`));
+    
     try {
       await transport.handleRequest(req, res, req.body);
     } catch (err) {
@@ -133,26 +147,33 @@ app.post("/mcp", async (req, res) => {
   }
 
   // Case 3 — STALE SESSION (server restarted, mcp-remote still has old ID)
-  // Transparently re-create the session with the SAME sessionId
+  // Tell client to re-initialize with proper MCP error response
   if (sessionId) {
-    // Check DB to see if this was indeed a session we previously had
     const knownSession = await Session.findOne({ sessionId });
     if (knownSession) {
-      console.error(`[Session] ↺ Stale session ${sessionId} — auto-recovering from DB`);
-      try {
-        transport = await createSession(sessionId);
-        await transport.handleRequest(req, res, req.body);
-        return;
-      } catch (err) {
-        console.error(`[Session] Recovery failed: ${err.message}`);
-      }
+      console.error(`[Session] ↺ Stale session ${sessionId} detected — instructing client to re-initialize`);
+      // Update last active so it's not GC'd immediately
+      knownSession.lastActive = new Date();
+      await knownSession.save();
     } else {
-       console.error(`[Session] ⚠️ Unknown session ID: ${sessionId}. Client must re-initialize.`);
+      console.error(`[Session] ⚠️ Unknown session ID: ${sessionId}. Client must re-initialize.`);
     }
   }
 
-  // Case 4 — no session ID at all and not an init request (malformed client)
-  res.status(400).json({ jsonrpc: "2.0", error: { code: -32000, message: "Missing mcp-session-id. Send initialize first." }, id: null });
+  // Case 4 — Session expired/unknown - send proper error that triggers client reconnect
+  // Use MCP error code -32000 (Server Error) which mcp-remote recognizes and handles by re-initializing
+  if (!res.headersSent) {
+    res.status(400).json({ 
+      jsonrpc: "2.0", 
+      error: { 
+        code: -32000, 
+        message: sessionId 
+          ? "Session expired or server restarted. Please re-initialize connection." 
+          : "Missing mcp-session-id. Send initialize request first." 
+      }, 
+      id: req.body?.id || null 
+    });
+  }
 });
 
 app.get("/mcp", async (req, res) => {
@@ -185,20 +206,51 @@ app.post("/messages", async (req, res) => {
 });
 
 // ── Health ────────────────────────────────────────────────────────────────────
-app.get("/health", (_req, res) => res.json({
-  status: "ok", version: "2.2.0",
-  tools: TOOL_NAMES,
-  sessions: streamableSessions.size,
-  transports: ["POST /mcp (streamable-http)", "GET /sse (legacy)"],
-  note: "Stale sessions auto-recover after server restart — no client reconnect needed.",
-}));
+app.get("/health", async (_req, res) => {
+  let dbSessionCount = 0;
+  try {
+    dbSessionCount = await Session.countDocuments();
+  } catch (err) {
+    console.error("[Health] Failed to count DB sessions:", err.message);
+  }
+  
+  res.json({
+    status: "ok", 
+    version: "2.3.1",
+    tools: TOOL_NAMES,
+    sessions: {
+      active: streamableSessions.size,
+      inDatabase: dbSessionCount,
+    },
+    transports: ["POST /mcp (streamable-http)", "GET /sse (legacy)"],
+    note: "Stale sessions trigger client re-initialization automatically.",
+  });
+});
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
-  console.error(`🚀 YouUnemployedLol v2.3 on :${PORT}`);
+  console.error(`🚀 YouUnemployedLol v2.3.1 on :${PORT}`);
   console.error(`   Tools: ${TOOL_NAMES.join(", ")}`);
   
   // Start background worker scheduler
   startScheduler().catch(err => console.error("⚠️ [Scheduler] Failed to start:", err.message));
+  
+  // Periodic session cleanup and logging (every 1 hour)
+  setInterval(async () => {
+    try {
+      const dbCount = await Session.countDocuments();
+      const activeCount = streamableSessions.size;
+      console.error(`[Session] Status: ${activeCount} active, ${dbCount} in DB`);
+      
+      // Clean up any sessions that somehow weren't cleaned by TTL
+      const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const deleted = await Session.deleteMany({ lastActive: { $lt: oneDayAgo } });
+      if (deleted.deletedCount > 0) {
+        console.error(`[Session] Cleaned up ${deleted.deletedCount} stale DB sessions`);
+      }
+    } catch (err) {
+      console.error(`[Session] Cleanup error: ${err.message}`);
+    }
+  }, 60 * 60 * 1000); // 1 hour
 });
