@@ -1,11 +1,10 @@
 // find_jobs.js — Live on-demand job search with server-side fit scoring
-// Sources: LinkedIn (curious_coder/linkedin-jobs-scraper)
+// Sources: LinkedIn (worldunboxer/rapid-linkedin-scraper) ← fixed & verified
 //          Internshala (apify/cheerio-scraper)
 //          Naukri     (bebity/naukri-jobs-scraper)  ← verified working actor
 //          ATS x13    (jobo.world/ats-jobs-search)
 // Returns STEP 4 table: scored jobs ≥6, skip list, seniority flags.
 
-import { extractStr } from "../utils/extractStr.js";
 import { Job, JobSearch } from "../db/schemas.js";
 import crypto from "crypto";
 import { callApifyActor } from "../utils/apify_utils.js";
@@ -182,25 +181,28 @@ async function saveJobsToDB(jobs) {
 }
 
 async function scrapeLinkedIn({ keywords, location, job_type, posted_within, max }) {
-  const tpr = postedWithinToTPR(posted_within);
+  // FIX: Use worldunboxer/rapid-linkedin-scraper (verified working actor)
+  // This actor uses keywords array and location string directly, not URLs
+  const keywordList = keywords.split(",").map(k => k.trim()).filter(Boolean);
+  const primaryLoc = location.split(",")[0].trim();
+  
+  // Map posted_within to datePosted filter
+  let datePosted = "past-week";
+  if (posted_within.includes("today") || posted_within.includes("24h")) {
+    datePosted = "past-24h";
+  } else if (posted_within.includes("2 day") || posted_within.includes("two")) {
+    datePosted = "past-week";
+  }
 
-  // FIX: curious_coder/linkedin-jobs-scraper expects urls as plain STRINGS not {url} objects
-  // Root cause confirmed: ERR_INVALID_URL with input: '[object Object]'
-  const keywordList  = keywords.split(",").map(k => k.trim()).filter(Boolean);
-  // Use first location only for LinkedIn (comma-separated causes too many URL combos)
-  const primaryLoc   = location.split(",")[0].trim();
-
-  const urls = keywordList.map(kw =>
-    `https://www.linkedin.com/jobs/search/?keywords=${encodeURIComponent(kw)}&location=${encodeURIComponent(primaryLoc)}&f_TPR=${tpr}&position=1&pageNum=0`
-  );
-
-  console.error(`[LinkedIn] URLs (${urls.length}):`, urls[0]);
+  console.error(`[LinkedIn] Searching for: ${keywordList.join(", ")} in ${primaryLoc}`);
   
   try {
-    const { items, error } = await callApifyActor("curious_coder/linkedin-jobs-scraper", {
-      urls,
-      count: max,
-      scrapeCompany: false,
+    const { items, error } = await callApifyActor("worldunboxer/rapid-linkedin-scraper", {
+      keywords: keywordList,
+      location: primaryLoc,
+      datePosted: datePosted,
+      resultsPerPage: max,
+      proxy: { useApifyProxy: true },
     }, { waitSecs: 90 });
 
     if (error) throw new Error(error);
@@ -212,14 +214,14 @@ async function scrapeLinkedIn({ keywords, location, job_type, posted_within, max
     }
 
     return (items || []).map((i) => ({
-      title:           extractStr(i, "title", "jobTitle", "job_title", "positionName", "name") || "Untitled",
-      company:         extractStr(i, "company", "companyName", "company_name", "companyTitle", "organizationName") || "Unknown",
-      location:        extractStr(i, "location", "formattedLocation", "jobLocation", "place") || primaryLoc,
-      isRemote:        /remote/i.test(extractStr(i, "location", "workType", "workplaceType") || ""),
-      applyUrl:        extractStr(i, "url", "jobUrl", "job_url", "applyUrl", "apply_url", "link"),
-      datePosted:      i.postedAt || i.publishedAt || i.datePosted || i.listedAt || i.time_posted || null,
-      experienceLevel: extractStr(i, "seniorityLevel", "seniority_level", "experienceLevel", "seniority"),
-      employmentType:  extractStr(i, "employmentType", "employment_type", "contractType", "jobType"),
+      title:           i.title || i.jobTitle || i.job_title || i.positionName || "Untitled",
+      company:         i.company || i.companyName || i.company_name || "Unknown",
+      location:        i.location || i.formattedLocation || i.jobLocation || primaryLoc,
+      isRemote:        /remote/i.test((i.location || i.workType || i.workplaceType || "").toLowerCase()),
+      applyUrl:        i.url || i.jobUrl || i.job_url || i.applyUrl || i.link || "",
+      datePosted:      i.postedAt || i.publishedAt || i.datePosted || i.listedAt || i.time_posted || new Date().toISOString(),
+      experienceLevel: i.seniorityLevel || i.seniority_level || i.experienceLevel || i.seniority || null,
+      employmentType:  i.employmentType || i.employment_type || i.contractType || i.jobType || job_type || null,
       skills:          Array.isArray(i.skills) ? i.skills : [],
       source:          "LinkedIn",
     }));
@@ -250,15 +252,15 @@ async function scrapeNaukri({ keywords, location, job_type, max }) {
     }
 
     return (items || []).map((i) => ({
-      title:           extractStr(i, "title", "job_title", "jobTitle", "designation") || "Untitled",
-      company:         extractStr(i, "company", "company_name", "companyName", "companyId") || "Unknown",
+      title:           i.title || i.job_title || i.jobTitle || i.designation || "Untitled",
+      company:         i.company || i.company_name || i.companyName || i.companyId || "Unknown",
       location:        Array.isArray(i.locations) ? i.locations.join(", ")
-                       : extractStr(i, "location", "city", "jobLocation") || primaryLoc,
-      isRemote:        /remote/i.test(String(i.workMode || i.workplace_type || i.is_remote || "")),
-      applyUrl:        extractStr(i, "job_url", "url", "applyUrl", "apply_url", "link"),
-      datePosted:      i.postedDate || i.posted_date || i.time_posted || i.date_posted || null,
-      experienceLevel: extractStr(i, "experience", "seniority_level", "experienceLevel", "exp") || null,
-      employmentType:  extractStr(i, "jobType", "employment_type", "job_type") || job_type || null,
+                       : i.location || i.city || i.jobLocation || primaryLoc,
+      isRemote:        /remote/i.test(String(i.workMode || i.workplace_type || i.is_remote || i.location || "")),
+      applyUrl:        i.job_url || i.url || i.applyUrl || i.apply_url || i.link || "",
+      datePosted:      i.postedDate || i.posted_date || i.time_posted || i.date_posted || new Date().toISOString(),
+      experienceLevel: i.experience || i.seniority_level || i.experienceLevel || i.exp || null,
+      employmentType:  i.jobType || i.employment_type || i.job_type || job_type || null,
       skills:          Array.isArray(i.skills) ? i.skills
                        : Array.isArray(i.keySkills) ? i.keySkills : [],
       source:          "Naukri",
@@ -306,16 +308,16 @@ async function scrapeATS({ keywords, location, job_type, max }) {
       }
 
       return {
-        title:           extractStr(i, "title", "jobTitle", "job_title", "name") || "Untitled",
-        company:         i.company?.name || extractStr(i, "company", "companyName", "company_name") || "Unknown",
+        title:           i.title || i.jobTitle || i.job_title || i.name || "Untitled",
+        company:         i.company?.name || i.company || i.companyName || i.company_name || "Unknown",
         location:        jobLoc,
-        isRemote:        i.is_remote || i.locations?.[0]?.is_remote || true, // ATS remote jobs
-        applyUrl:        extractStr(i, "apply_url", "listing_url", "job_url", "url"),
-        datePosted:      i.date_posted || i.created_at || i.posted_at || null,
-        experienceLevel: extractStr(i, "experience_level", "seniority_level", "seniority") || null,
-        employmentType:  extractStr(i, "employment_type", "contract_type") || job_type || null,
+        isRemote:        i.is_remote || i.locations?.[0]?.is_remote || /remote/i.test(jobLoc),
+        applyUrl:        i.apply_url || i.listing_url || i.job_url || i.url || "",
+        datePosted:      i.date_posted || i.created_at || i.posted_at || new Date().toISOString(),
+        experienceLevel: i.experience_level || i.seniority_level || i.seniority || null,
+        employmentType:  i.employment_type || i.contract_type || job_type || null,
         skills:          Array.isArray(i.skills) ? i.skills : [],
-        source:          extractStr(i, "source") || "ATS",
+        source:          i.source || "ATS",
       };
     });
   } catch (err) {
@@ -391,9 +393,10 @@ async function scrapeInternshala({ keywords, location, max }) {
       proxyConfiguration: { useApifyProxy: true },
     }, { waitSecs: 90 });
 
-    const { items } = await client.dataset(run.defaultDatasetId).listItems();
+    if (error) throw new Error(error);
+
     // Cheerio results are usually already flat
-    const flatItems = items.flat().filter(Boolean);
+    const flatItems = (items || []).flat().filter(Boolean);
     console.error(`[Internshala] ✅ Found ${flatItems.length} items`);
 
     return flatItems.map((i) => ({
@@ -402,7 +405,7 @@ async function scrapeInternshala({ keywords, location, max }) {
       experienceLevel: "internship",
       employmentType:  "internship",
       skills:          [],
-      source:          "internshala",
+      source:          "Internshala",
     }));
   } catch (err) {
     console.error("[Internshala] scrape error:", err.message);
@@ -490,6 +493,8 @@ async function performSearchInBackground(searchId, args) {
       return days <= maxDays;
     });
 
+    console.error(`[Search] Total scraped: ${allJobs.length}, After date filter: ${filtered.length}`);
+
     // 2. Post-scrape location filter (Strict for India)
     const isIndiaReq = /india|noida|gurugram|delhi|bangalore|pune|mumbai|hyderabad/i.test(location);
     if (isIndiaReq) {
@@ -497,12 +502,20 @@ async function performSearchInBackground(searchId, args) {
         j.isRemote || 
         /india|noida|gurugram|delhi|bangalore|pune|mumbai|hyderabad|chennai/i.test(j.location || "")
       );
+      console.error(`[Search] After India location filter: ${filtered.length}`);
     }
 
-    // 3. Save to DB (Upsert)
+    // 3. Validate data quality - log jobs with missing critical fields
+    const invalidJobs = filtered.filter(j => !j.title || !j.company);
+    if (invalidJobs.length > 0) {
+      console.error(`[Search] ⚠️ Found ${invalidJobs.length} jobs with missing title/company - sample:`, 
+        JSON.stringify(invalidJobs.slice(0, 2), null, 2));
+    }
+
+    // 4. Save to DB (Upsert)
     await saveJobsToDB(filtered);
 
-    // 4. Scoring & Seniority Check
+    // 5. Scoring & Seniority Check
     const scored = filtered.map((job) => {
       const fitScore = computeFitScore(
         {
@@ -567,7 +580,11 @@ async function performSearchInBackground(searchId, args) {
     ];
 
     if (skipJobs.length) {
-      lines.push(`### Skipping ${skipJobs.length} low-fit roles:`, ...skipJobs.map(j => `- **${j.title}** at ${j.company} (${j.source})`));
+      lines.push(
+        ``,
+        `### Skipping ${skipJobs.length} low-fit roles:`,
+        ...skipJobs.map(j => `- **${j.title || "Untitled"}** at ${j.company || "Unknown"} (${j.source}) — Fit: ${j.fitScore}/10`)
+      );
     }
 
     await JobSearch.findOneAndUpdate(
